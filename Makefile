@@ -1,0 +1,26 @@
+# PREFIX=arm-cortex_a15-linux-gnueabihf
+PREFIX=armv6-rpi-linux-gnueabi
+PATH_PREFIX=$(HOME)/x-tools/$(PREFIX)/bin
+
+AR=$(PATH_PREFIX)/$(PREFIX)-ar
+CC=$(PATH_PREFIX)/$(PREFIX)-gcc
+LD=$(PATH_PREFIX)/$(PREFIX)-ld
+
+CFLAGS=-Wall -g
+
+PROGS=zero-test zero-swd
+LIBS=libpin.a
+
+all: $(PROGS)
+
+zero-test: test.c
+	$(CC) -o $@ $^
+
+zero-swd: zero-swd.o libpin.a
+	$(CC) -o $@ $^
+
+libpin.a: libpin.o
+	$(AR) cr $@ $^
+
+clean:
+	rm -f *.o $(PROGS) $(LIBS)
