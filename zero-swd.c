@@ -1,5 +1,7 @@
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "libpin.h"
 
@@ -58,7 +60,25 @@ fprintf(stderr, "%s:%d: op:%02x\n", __func__, __LINE__, op);
 int main(int argc, char** argv)
 {
   int rv = EXIT_FAILURE;
-  struct pinctl* pins = pins_open();
+  unsigned clock = 1000;
+  int opt;
+
+  while ((opt = getopt(argc, argv, "c:")) != -1) {
+    switch (opt) {
+    case 'c':
+      {
+	char* end;
+	clock = strtoul(optarg, &end, 0);
+	assert(end != optarg);
+      }
+      break;
+
+    default:
+      assert(0);
+    }
+  }
+  
+  struct pinctl* pins = pins_open(clock);
   if (!pins) goto err_exit;
 
   /* reset-y bits for the debug port */

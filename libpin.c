@@ -20,8 +20,6 @@
  */
 #define REG_MAP_SIZE 0x1000
 
-#define CYCLE_TIME_US 1000
-
 #define PIN_CLOCK 20
 #define PIN_DATA 21
 
@@ -62,6 +60,7 @@ unsigned s= (__p) % 32; \
 })
 
 struct pinctl {
+  unsigned cycle; /* us */
   int fd;
   uint32_t* regs;
 };
@@ -72,6 +71,9 @@ struct pinctl {
  * 4 - hold 150 cycles
  * 5 - clear GPPUD
  * 6 - clear GPPUDCLKxx
+ *
+ * FixMe: not sure if the manual's reference to cycle ere is the
+ * host's clocking or the target's clock rate.
  */
 static void config_hiz(struct pinctl* c, int pin, int sel)
 {
@@ -89,12 +91,23 @@ usleep(1000);
 usleep(1000);
 }
 
-struct pinctl* pins_open(void)
+struct pinctl* pins_open(unsigned clock)
 {
+  /* make sure the clock rate is representable w/ usleep(3) since i'm
+   * lazy and linux isn't quite rtos-y.
+   */
+  unsigned cycle = 1000000 / (2 * clock);
+  if (cycle < 10) {
+    fprintf(stderr, "%s:%d: clock:%u not representable\n", __func__, __LINE__, clock);
+    return NULL;
+  }
+  printf("%s:%d: cycle:%uus\n", __func__, __LINE__, cycle);
+  
   struct pinctl* rv = malloc(sizeof(*rv));
   if (!rv) goto err_exit;
   rv->fd = -1;
   rv->regs = MAP_FAILED;
+  rv->cycle = cycle;
   
   rv->fd = open("/dev/gpiomem", O_RDWR);
   if (rv->fd == -1) {
@@ -140,19 +153,19 @@ static void clock_out_bit(struct pinctl* c, int val)
 {
   PIN_WRITE(c->regs, PIN_DATA, val);
   PIN_WRITE(c->regs, PIN_CLOCK, 1);
-  usleep(CYCLE_TIME_US);
+  usleep(c->cycle);
   PIN_WRITE(c->regs, PIN_CLOCK, 0);
-  usleep(CYCLE_TIME_US);
+  usleep(c->cycle);
 }
 
 static uint8_t clock_in_bit(struct pinctl* c)
 {
   PIN_WRITE(c->regs, PIN_CLOCK, 1);
-  usleep(CYCLE_TIME_US / 2);
+  usleep(c->cycle / 2);
   uint8_t rv = PIN_READ(c->regs, PIN_DATA);
-  usleep(CYCLE_TIME_US / 2);
+  usleep(c->cycle / 2);
   PIN_WRITE(c->regs, PIN_CLOCK, 0);
-  usleep(CYCLE_TIME_US);
+  usleep(c->cycle);
 
   return rv;
 }
@@ -162,7 +175,7 @@ int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
   assert(c != NULL);
   assert(c->regs != MAP_FAILED);
   PIN_DIR(c->regs, PIN_DATA, 1);
-  usleep(CYCLE_TIME_US);
+  usleep(c->cycle * 2);
 
   int i, j;
   for (i = 0; i < nb / 8; i++)
@@ -180,7 +193,7 @@ int pins_read(struct pinctl* c, uint8_t* bs, int nb)
   assert(c->regs != MAP_FAILED);
   PIN_WRITE(c->regs, PIN_DATA, 0);  
   PIN_DIR(c->regs, PIN_DATA, 0);
-  usleep(CYCLE_TIME_US);
+  usleep(c->cycle * 2);
 
   int i, j;
   for (i = 0; i < nb / 8; i++) {

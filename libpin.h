@@ -5,7 +5,7 @@
 
 struct pinctl;
 
-struct pinctl* pins_open(void);
+struct pinctl* pins_open(unsigned /* clock rate */);
 void pins_close(struct pinctl*);
 
 int pins_write(struct pinctl*, const uint8_t* /* bit stream */, int /* n */);
