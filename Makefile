@@ -22,5 +22,8 @@ zero-swd: zero-swd.o libpin.a
 libpin.a: libpin.o
 	$(AR) cr $@ $^
 
+libpin.i: libpin.c libpin.h
+	$(CC) -E -dM -o $@  $<
+
 clean:
-	rm -f *.o $(PROGS) $(LIBS)
+	rm -f *.o *.i *~ $(PROGS) $(LIBS)
