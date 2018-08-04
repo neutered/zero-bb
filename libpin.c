@@ -66,6 +66,29 @@ struct pinctl {
   uint32_t* regs;
 };
 
+/* 1 - write GPPUD (94h)
+ * 2 - hold 150 cycles
+ * 3 - GPPUDCLKxx (98h / 9Ch)
+ * 4 - hold 150 cycles
+ * 5 - clear GPPUD
+ * 6 - clear GPPUDCLKxx
+ */
+static void config_hiz(struct pinctl* c, int pin, int sel)
+{
+  uint32_t val = (sel < 0 ? 0x01 : /* down */
+		  sel > 0 ? 0x02 : /* up */
+		  0x00);           /* disable */
+  int i = pin / 32;
+  int s = pin % 32;
+
+  STORE(c->regs + (0x94 / 4), val, __ATOMIC_RELEASE);
+usleep(1000);
+  STORE(c->regs + (0x98 / 4) + i, (1 << s), __ATOMIC_RELEASE);
+usleep(1000);
+  STORE(c->regs + (0x94 / 4), 0, __ATOMIC_RELEASE);
+usleep(1000);
+}
+
 struct pinctl* pins_open(void)
 {
   struct pinctl* rv = malloc(sizeof(*rv));
@@ -85,10 +108,15 @@ struct pinctl* pins_open(void)
     goto err_exit;
   }
 
- PIN_DIR(rv->regs, PIN_CLOCK, 1);
-  PIN_WRITE(rv->regs, PIN_CLOCK, 1);
- PIN_DIR(rv->regs, PIN_DATA, 1);
-  PIN_WRITE(rv->regs, PIN_DATA, 1);  
+  /* setup high-z configuration.
+   *  data - up. the device is supposed to have this set?
+   *  clock - down. this is always host controlled?
+   */
+  config_hiz(rv, PIN_CLOCK, -1);
+  config_hiz(rv, PIN_DATA, 1);
+
+  PIN_DIR(rv->regs, PIN_CLOCK, 1);
+  PIN_DIR(rv->regs, PIN_DATA, 1);
 
   return rv;
 
