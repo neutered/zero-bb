@@ -108,15 +108,15 @@ struct pinctl* pins_open(void)
     goto err_exit;
   }
 
+  PIN_DIR(rv->regs, PIN_CLOCK, 1);
+  PIN_DIR(rv->regs, PIN_DATA, 0);  
+
   /* setup high-z configuration.
    *  data - up. the device is supposed to have this set?
    *  clock - down. this is always host controlled?
    */
   config_hiz(rv, PIN_CLOCK, -1);
   config_hiz(rv, PIN_DATA, 1);
-
-  PIN_DIR(rv->regs, PIN_CLOCK, 1);
-  PIN_DIR(rv->regs, PIN_DATA, 1);
 
   return rv;
 
@@ -145,11 +145,24 @@ static void clock_out_bit(struct pinctl* c, int val)
   usleep(CYCLE_TIME_US);
 }
 
+static uint8_t clock_in_bit(struct pinctl* c)
+{
+  PIN_WRITE(c->regs, PIN_CLOCK, 1);
+  usleep(CYCLE_TIME_US / 2);
+  uint8_t rv = PIN_READ(c->regs, PIN_DATA);
+  usleep(CYCLE_TIME_US / 2);
+  PIN_WRITE(c->regs, PIN_CLOCK, 0);
+  usleep(CYCLE_TIME_US);
+
+  return rv;
+}
+
 int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
 {
   assert(c != NULL);
   assert(c->regs != MAP_FAILED);
   PIN_DIR(c->regs, PIN_DATA, 1);
+  usleep(CYCLE_TIME_US);
 
   int i, j;
   for (i = 0; i < nb / 8; i++)
@@ -157,6 +170,27 @@ int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
       clock_out_bit(c, bs[i] & (1 << j));
   for (j = 0; j < (nb & 7); j++)
     clock_out_bit(c, bs[i] & (1 << j));
+  
+  return nb;
+}
+
+int pins_read(struct pinctl* c, uint8_t* bs, int nb)
+{
+  assert(c != NULL);
+  assert(c->regs != MAP_FAILED);
+  PIN_WRITE(c->regs, PIN_DATA, 0);  
+  PIN_DIR(c->regs, PIN_DATA, 0);
+  usleep(CYCLE_TIME_US);
+
+  int i, j;
+  for (i = 0; i < nb / 8; i++) {
+    bs[i] = 0;
+    for (j = 0; j < 8; j++)
+      bs[i] |= (clock_in_bit(c) << j);
+  }
+  bs[i] = 0;
+  for (j = 0; j < (nb & 7); j++)
+    bs[i] |= (clock_in_bit(c) << j);
   
   return nb;
 }
