@@ -61,6 +61,10 @@ unsigned s= (__p) % 32; \
 
 struct pinctl {
   unsigned cycle; /* us */
+  /* direction change requires turnaround time clockin. this is
+   * inserted on the next bus op.
+   */
+  int last_rw_op;
   int fd;
   uint32_t* regs;
 };
@@ -102,16 +106,17 @@ struct pinctl* pins_open(unsigned clock)
     return NULL;
   }
   printf("%s:%d: cycle:%uus\n", __func__, __LINE__, cycle);
-  
+
   struct pinctl* rv = malloc(sizeof(*rv));
   if (!rv) goto err_exit;
   rv->fd = -1;
   rv->regs = MAP_FAILED;
   rv->cycle = cycle;
-  
+  rv->last_rw_op = -1;
+
   rv->fd = open("/dev/gpiomem", O_RDWR);
   if (rv->fd == -1) {
-    fprintf(stderr, "%s:%d: open():%d:%s\n", __func__, __LINE__, errno, strerror(errno));    
+    fprintf(stderr, "%s:%d: open():%d:%s\n", __func__, __LINE__, errno, strerror(errno));
     goto err_exit;
   }
 
@@ -122,7 +127,7 @@ struct pinctl* pins_open(unsigned clock)
   }
 
   PIN_DIR(rv->regs, PIN_CLOCK, 1);
-  PIN_DIR(rv->regs, PIN_DATA, 0);  
+  PIN_DIR(rv->regs, PIN_DATA, 0);
 
   /* setup high-z configuration.
    *  data - up. the device is supposed to have this set?
@@ -170,10 +175,22 @@ static uint8_t clock_in_bit(struct pinctl* c)
   return rv;
 }
 
+static void clock_turnaround(struct pinctl* c, int op)
+{
+  for (int i = 0; i < 2; i++)
+    clock_in_bit(c);
+  c->last_rw_op = op;
+}
+
 int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
 {
   assert(c != NULL);
   assert(c->regs != MAP_FAILED);
+
+  /* turnaround time? */
+  if (c->last_rw_op != 1)
+    clock_turnaround(c, 1);
+
   PIN_DIR(c->regs, PIN_DATA, 1);
   usleep(c->cycle * 2);
 
@@ -183,7 +200,7 @@ int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
       clock_out_bit(c, bs[i] & (1 << j));
   for (j = 0; j < (nb & 7); j++)
     clock_out_bit(c, bs[i] & (1 << j));
-  
+
   return nb;
 }
 
@@ -191,7 +208,9 @@ int pins_read(struct pinctl* c, uint8_t* bs, int nb)
 {
   assert(c != NULL);
   assert(c->regs != MAP_FAILED);
-  PIN_WRITE(c->regs, PIN_DATA, 0);  
+
+  c->last_rw_op = 0;
+  PIN_WRITE(c->regs, PIN_DATA, 0);
   PIN_DIR(c->regs, PIN_DATA, 0);
   usleep(c->cycle * 2);
 
@@ -204,6 +223,6 @@ int pins_read(struct pinctl* c, uint8_t* bs, int nb)
   bs[i] = 0;
   for (j = 0; j < (nb & 7); j++)
     bs[i] |= (clock_in_bit(c) << j);
-  
+
   return nb;
 }
