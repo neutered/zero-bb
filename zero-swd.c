@@ -68,19 +68,18 @@ static uint8_t opcode(int ap, int reg, int rw)
 static uint8_t send_op(struct pinctl* pins, int ap, int reg, int rw)
 {
   uint8_t op = opcode(ap, reg, rw);
-fprintf(stderr, "%s:%d: op:%02x\n", __func__, __LINE__, op);
+printf("%s:%d: op:%02x\n", __func__, __LINE__, op);
   pins_write(pins, &op, 8);
 
   uint8_t status;
   pins_read(pins, &status, 3);
-
+printf("%s:%d: status:%02x\n", __func__, __LINE__, status);
   return status;
 }
 
 static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
 {
   uint8_t status = send_op(pins, ap, reg, 1);
-  fprintf(stderr, "%s:%d: status:%02x\n", __func__, __LINE__, status);
   if (status != 1) {
     if (status == 0x04)
       return -EFAULT;
@@ -243,19 +242,18 @@ int main(int argc, char** argv)
     goto err_exit;
   }
   printf("%s:%d: idcode:%08x\n", __func__, __LINE__, idcode);
-// resync(pins, 1);
-  opt = swd_status(pins, &idcode);
-assert(opt == 0);
+
+  /* set power state */
   opt = swd_write(pins, 0, REG_DP_STATUS, CSYSPWRUPREQ | CDBGPWRUPREQ | CDBGRSTREQ);
+  assert(opt == 0);
+  do {
+    opt = swd_status(pins, &idcode);
+    printf("%s:%d: rv:%d:%s status:%08x\n", __func__, __LINE__, opt, strerror(opt), idcode);
 assert(opt == 0);
-  opt = swd_status(pins, &idcode);
-assert(opt == 0);
-  opt = swd_read(pins, 1, 0x0, &idcode);
-assert(opt == 0);
-dump_ap_status(idcode);
+  } while ((idcode & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) != (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK));
 
   rv = EXIT_SUCCESS;
- err_exit:
+err_exit:
   pins_close(pins);
   return rv;
 }
