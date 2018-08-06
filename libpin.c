@@ -60,7 +60,7 @@ unsigned s= (__p) % 32; \
 })
 
 struct pinctl {
-  unsigned cycle; /* us */
+  unsigned phase; /* us */
   /* direction change requires turnaround time clockin. this is
    * inserted on the next bus op.
    */
@@ -100,18 +100,18 @@ struct pinctl* pins_open(unsigned clock)
   /* make sure the clock rate is representable w/ usleep(3) since i'm
    * lazy and linux isn't quite rtos-y.
    */
-  unsigned cycle = 1000000 / (2 * clock);
-  if (cycle < 10) {
+  unsigned phase = 1000000 / (2 * clock);
+  if (phase < 10) {
     fprintf(stderr, "%s:%d: clock:%u not representable\n", __func__, __LINE__, clock);
     return NULL;
   }
-  printf("%s:%d: cycle:%uus\n", __func__, __LINE__, cycle);
+  printf("%s:%d: clock phase:time %uus\n", __func__, __LINE__, phase);
 
   struct pinctl* rv = malloc(sizeof(*rv));
   if (!rv) goto err_exit;
   rv->fd = -1;
   rv->regs = MAP_FAILED;
-  rv->cycle = cycle;
+  rv->phase = phase;
   rv->last_rw_op = -1;
 
   rv->fd = open("/dev/gpiomem", O_RDWR);
@@ -158,19 +158,19 @@ static void clock_out_bit(struct pinctl* c, int val)
 {
   PIN_WRITE(c->regs, PIN_DATA, val);
   PIN_WRITE(c->regs, PIN_CLOCK, 1);
-  usleep(c->cycle);
+  usleep(c->phase);
   PIN_WRITE(c->regs, PIN_CLOCK, 0);
-  usleep(c->cycle);
+  usleep(c->phase);
 }
 
 static uint8_t clock_in_bit(struct pinctl* c)
 {
   PIN_WRITE(c->regs, PIN_CLOCK, 1);
-  usleep(c->cycle / 2);
+  usleep(c->phase / 2);
   uint8_t rv = PIN_READ(c->regs, PIN_DATA);
-  usleep(c->cycle / 2);
+  usleep(c->phase / 2);
   PIN_WRITE(c->regs, PIN_CLOCK, 0);
-  usleep(c->cycle);
+  usleep(c->phase);
 
   return rv;
 }
@@ -192,7 +192,7 @@ int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
     clock_turnaround(c, 1);
 
   PIN_DIR(c->regs, PIN_DATA, 1);
-  usleep(c->cycle * 2);
+  usleep(c->phase * 2);
 
   int i, j;
   for (i = 0; i < nb / 8; i++)
@@ -212,7 +212,7 @@ int pins_read(struct pinctl* c, uint8_t* bs, int nb)
   c->last_rw_op = 0;
   PIN_WRITE(c->regs, PIN_DATA, 0);
   PIN_DIR(c->regs, PIN_DATA, 0);
-  usleep(c->cycle * 2);
+  usleep(c->phase * 2);
 
   int i, j;
   for (i = 0; i < nb / 8; i++) {
