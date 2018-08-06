@@ -194,6 +194,20 @@ static void dump_ap_status(uint32_t status)
   dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), status);
 }
 
+static void dump_ap_idcode(uint32_t idcode)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 28, "revision" },
+    { 27, 24, "continuation" },
+    { 23, 17, "identity" },
+    { 16, 13, "class" },
+    { 12, 8, "reserved" },
+    { 7, 4, "variant" },
+    { 3, 0, "type" },
+  };
+  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), idcode);
+}
+
 static int swd_status(struct pinctl* c, uint32_t* status)
 {
   int err = swd_read(c, 0, REG_DP_STATUS, status);
@@ -204,6 +218,27 @@ static int swd_status(struct pinctl* c, uint32_t* status)
   dump_dp_status(*status);
 err_exit:
   return err;
+}
+
+static int swd_ap_select(struct pinctl* c, uint8_t sel, uint8_t bank)
+{
+  uint32_t val = (sel << 24) | (bank << 4);
+  return swd_write(c, 0, REG_DP_SELECT, val);
+}
+
+static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
+{
+  uint8_t bank = (0xfc >> 4) & 0x0f;
+  uint8_t reg = (0xfc >> 0) & 0x0f;
+  int rv = swd_ap_select(c, ap, bank);
+assert(rv == 0);
+  rv = swd_read(c, 1, reg, out);
+  assert(rv == 0);
+  rv = swd_read(c, 0, 0x0c, out);
+  assert(rv == 0);
+  if (rv == 0)
+    dump_ap_idcode(*out);
+  return rv;
 }
 
 int main(int argc, char** argv)
@@ -251,6 +286,14 @@ int main(int argc, char** argv)
     printf("%s:%d: rv:%d:%s status:%08x\n", __func__, __LINE__, opt, strerror(opt), idcode);
 assert(opt == 0);
   } while ((idcode & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) != (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK));
+
+  /* select the ap, it should be a memory access class */
+  opt = swd_write(pins, 0, REG_DP_SELECT, 0 << 24);
+assert(opt == 0);
+
+  opt = swd_ap_idcode(pins, 0, &idcode);
+  assert(opt == 0);
+  assert(((idcode >> 13) & 0x0f) == 0x08);
 
   rv = EXIT_SUCCESS;
 err_exit:
