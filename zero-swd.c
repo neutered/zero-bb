@@ -7,6 +7,11 @@
 
 #include "libpin.h"
 
+#define REG_DP_IDCODE 0x00
+#define REG_DP_STATUS 0x04
+#define REG_DP_SELECT 0x08
+#define REG_DP_RDBUFF 0x0c
+
 static void resync(struct pinctl* pins, int idle)
 {
   static const uint8_t bs[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00 };
@@ -37,7 +42,7 @@ static uint8_t opcode(int ap, int reg, int rw)
   uint8_t rv = 0x81;
   if (ap) rv |= 0x02;
   if (rw) rv |= 0x04;
-  rv |= (reg & 0x0f) << 1;
+  rv |= (reg & 0x0c) << 1;
   if (__builtin_popcount(rv) & 0x01) rv |= 0x20;
   return rv;
 }
@@ -52,16 +57,16 @@ static uint8_t send_op(struct pinctl* pins, int ap, int reg, int rw)
   uint8_t op = opcode(ap, reg, rw);
 fprintf(stderr, "%s:%d: op:%02x\n", __func__, __LINE__, op);
   pins_write(pins, &op, 8);
-  
+
   uint8_t status;
   pins_read(pins, &status, 3);
 
   return status;
 }
 
-static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* out)
+static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
 {
-  uint8_t status = send_op(pins, 0, 0, 1);
+  uint8_t status = send_op(pins, ap, reg, 1);
   fprintf(stderr, "%s:%d: status:%02x\n", __func__, __LINE__, status);
   if (status != 1) {
     if (status == 0x04)
@@ -70,10 +75,10 @@ static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* out)
       return -EAGAIN;
     else
       fprintf(stderr, "%s:%d: unhandled status:%02x\n", __func__, __LINE__, status);
-    assert(0);    
+    assert(0);
   }
 
-  /* 32-bit data + parity + turnaround? */
+  /* 32-bit data + parity */
   uint8_t bs[4 + 1];
   pins_read(pins, bs, 33);
   int i, n;
@@ -85,12 +90,84 @@ static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* out)
   }
 
   /* convert out of lsb-first order */
-  if (out)
-    *out = ((bs[3] << 24) |
+  if (val)
+    *val = ((bs[3] << 24) |
 	    (bs[2] << 16) |
 	    (bs[1] << 8) |
 	    (bs[0] << 0));
   return 0;
+}
+
+static int swd_write(struct pinctl* pins, int ap, int reg, uint32_t val)
+{
+  uint8_t status = send_op(pins, ap, reg, 0);
+  fprintf(stderr, "%s:%d: status:%02x\n", __func__, __LINE__, status);
+  if (status != 1) {
+    if (status == 0x04)
+      return -EFAULT;
+    else if (status == 0x02)
+      return -EAGAIN;
+    else
+      fprintf(stderr, "%s:%d: unhandled status:%02x\n", __func__, __LINE__, status);
+    assert(0);
+  }
+
+  /* 32-bit data + parity */
+  uint8_t bs[4 + 1];
+  bs[0] = (val >> 0) & 0xff;
+  bs[1] = (val >> 8) & 0xff;
+  bs[2] = (val >> 16) & 0xff;
+  bs[3] = (val >> 24) & 0xff;
+  bs[4] = __builtin_popcount(val) & 0x01;
+  pins_write(pins, bs, 33);
+
+  return 0;
+}
+
+static void dump_dp_status(uint32_t status)
+{
+  printf("%s:%d: status:%08x:", __func__, __LINE__, status);
+  static const struct {
+    unsigned hi, lo;
+    const char* name;
+  } fields[] = {
+    { 31, 31, "csyspwrupack" },
+    { 30, 30, "csyspwrupreq" },
+    { 29, 29, "cdbgpwrupack" },
+    { 28, 28, "cdbgpwrupreq" },
+    { 27, 27, "cdbgrstack" },
+    { 26, 26, "cdbgrstreq" },
+    { 25, 24, "reserved0" },
+    { 23, 12, "trncnt" },
+    { 11, 8, "masklane"},
+    { 7, 7, "wdataerr" },
+    { 6, 6, "readok" },
+    { 5, 5, "stickyerr" },
+    { 4, 4, "stickycmp" },
+    { 3, 2, "trnmode" },
+    { 1, 1, "stickyorun" },
+    { 0, 0, "orundetect" },
+  };
+  for (int i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+    const uint32_t mask = (((1ull << (fields[i].hi + 1)) - 1) &
+                           ((1ull << (fields[i].lo + 1)) - 1));
+    const uint32_t val = (status & mask) >> fields[i].lo;
+    if (val)
+      printf("%s:%x ", fields[i].name, val);
+  }
+  printf("\n");
+}
+
+static int swd_status(struct pinctl* c, uint32_t* status)
+{
+  int err = swd_read(c, 0, REG_DP_STATUS, status);
+  if (err) {
+    fprintf(stderr, "%s:%d: swd_read(DP_STATUS):%d:%s\n", __func__, __LINE__, err, strerror(err));
+    goto err_exit;
+  }
+  dump_dp_status(*status);
+err_exit:
+  return err;
 }
 
 int main(int argc, char** argv)
@@ -113,7 +190,7 @@ int main(int argc, char** argv)
       assert(0);
     }
   }
-  
+
   struct pinctl* pins = pins_open(clock);
   if (!pins) goto err_exit;
 
@@ -124,11 +201,19 @@ int main(int argc, char** argv)
 
   /* reading id takes the debug port out of reset */
   uint32_t idcode;
-  if ((opt = swd_read(pins, 0, 0, &idcode)) != 0) {
+  if ((opt = swd_read(pins, 0, REG_DP_IDCODE, &idcode)) != 0) {
     fprintf(stderr, "%s:%d: swd_read(IDCODE):%d:%s\n", __func__, __LINE__, opt, strerror(opt));
     goto err_exit;
   }
   printf("%s:%d: idcode:%08x\n", __func__, __LINE__, idcode);
+// resync(pins, 1);
+  opt = swd_status(pins, &idcode);
+assert(opt == 0);
+dump_dp_status(0x54000000);
+  opt = swd_write(pins, 0, 0x04, 0x54000000);
+assert(opt == 0);
+  opt = swd_status(pins, &idcode);
+assert(opt == 0);
 
   rv = EXIT_SUCCESS;
  err_exit:
