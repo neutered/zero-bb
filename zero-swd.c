@@ -12,6 +12,19 @@
 #define REG_DP_SELECT 0x08
 #define REG_DP_RDBUFF 0x0c
 
+#define CSYSPWRUPACK (1 << 31)
+#define CSYSPWRUPREQ (1 << 30)
+#define CDBGPWRUPACK (1 << 29)
+#define CDBGPWRUPREQ (1 << 28)
+#define CDBGRSTACK (1 << 27)
+#define CDBGRSTREQ (1 << 26)
+#define WDATAERR (1 << 7)
+#define READOK (1 << 6)
+#define STICKYERR (1 << 5)
+#define STICKYCMP (1 << 4)
+#define STICKYORUN (1 << 1)
+#define ORUNDETECT (1 << 0)
+
 static void resync(struct pinctl* pins, int idle)
 {
   static const uint8_t bs[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00 };
@@ -124,13 +137,26 @@ static int swd_write(struct pinctl* pins, int ap, int reg, uint32_t val)
   return 0;
 }
 
+struct port_field_desc {
+  unsigned hi, lo;
+  const char* name;
+};
+
+static void dump_reg(const char* f, const struct port_field_desc* fs, unsigned nfs, uint32_t reg)
+{
+  printf("%s: reg:%08x:", f, reg);
+  for (int i = 0; i < nfs; i++) {
+    const uint32_t mask = (((1ull << (fs[i].hi + 1)) - 1) &
+                           (~0ul << fs[i].lo));
+    const uint32_t val = (reg & mask) >> fs[i].lo;
+    if (val)
+      printf("%s:%x ", fs[i].name, val);
+  }
+  printf("\n");
+}
 static void dump_dp_status(uint32_t status)
 {
-  printf("%s:%d: status:%08x:", __func__, __LINE__, status);
-  static const struct {
-    unsigned hi, lo;
-    const char* name;
-  } fields[] = {
+  static const struct port_field_desc fields[] = {
     { 31, 31, "csyspwrupack" },
     { 30, 30, "csyspwrupreq" },
     { 29, 29, "cdbgpwrupack" },
@@ -148,14 +174,25 @@ static void dump_dp_status(uint32_t status)
     { 1, 1, "stickyorun" },
     { 0, 0, "orundetect" },
   };
-  for (int i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
-    const uint32_t mask = (((1ull << (fields[i].hi + 1)) - 1) &
-                           ((1ull << (fields[i].lo + 1)) - 1));
-    const uint32_t val = (status & mask) >> fields[i].lo;
-    if (val)
-      printf("%s:%x ", fields[i].name, val);
-  }
-  printf("\n");
+  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), status);
+}
+
+static void dump_ap_status(uint32_t status)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 31, "dbgswenable" },
+    { 30, 24, "prot" },
+    { 23, 23, "spiden" },
+    { 22, 16, "res0" },
+    { 15, 12, "type" },
+    { 11, 8, "mode" },
+    { 7, 7, "trinprog" },
+    { 6, 6, "deviceen" },
+    { 5, 4, "addrinc" },
+    { 3, 3, "res1" },
+    { 2, 0, "size" },
+  };
+  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), status);
 }
 
 static int swd_status(struct pinctl* c, uint32_t* status)
@@ -209,11 +246,13 @@ int main(int argc, char** argv)
 // resync(pins, 1);
   opt = swd_status(pins, &idcode);
 assert(opt == 0);
-dump_dp_status(0x54000000);
-  opt = swd_write(pins, 0, 0x04, 0x54000000);
+  opt = swd_write(pins, 0, REG_DP_STATUS, CSYSPWRUPREQ | CDBGPWRUPREQ | CDBGRSTREQ);
 assert(opt == 0);
   opt = swd_status(pins, &idcode);
 assert(opt == 0);
+  opt = swd_read(pins, 1, 0x0, &idcode);
+assert(opt == 0);
+dump_ap_status(idcode);
 
   rv = EXIT_SUCCESS;
  err_exit:
