@@ -276,20 +276,25 @@ static int swd_ap_select(struct pinctl* c, uint8_t sel, uint8_t bank)
   return swd_write(c, 0, REG_DP_SELECT, val);
 }
 
-static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
+static int swd_ap_read(struct pinctl* c, int retry, int ap, uint8_t reg, uint32_t* out)
 {
   uint8_t bank = (reg >> 4) & 0x0f;
   uint8_t offset = (reg >> 0) & 0x0f;
   int rv = swd_ap_select(c, ap, bank);
   if (rv != 0) return rv;
 
+retry:
   /* ap reads are posted so we have to issue a dummy read */
   for (int i = 0; i < 2; i++) {
     rv = swd_read(c, 1, offset, out);
-    if (verbose)
-      printf("%s:%d: %d ret:%d ap:%02x:%08x\n", __func__, __LINE__, i, rv, reg, *out);
+    if (retry && (rv == EAGAIN)) {
+      usleep(1000);
+      goto retry;
+    }
     if (rv != 0) break;
   }
+  if (verbose)
+    printf("%s:%d: ap:%02x:%08x\n", __func__, __LINE__, reg, *out);
   return rv;
 }
 
@@ -304,7 +309,7 @@ static int swd_ap_write(struct pinctl* c, int ap, uint8_t reg, uint32_t val)
 
 static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
 {
-  int rv = swd_ap_read(c, ap, REG_AP_IDR, out);
+  int rv = swd_ap_read(c, 0, ap, REG_AP_IDR, out);
   if (verbose && (rv == 0))
     dump_ap_idcode(*out);
   return rv;
@@ -364,28 +369,39 @@ int main(int argc, char** argv)
   assert(opt == 0);
   assert(((val >> 13) & 0x0f) == 0x08);
 
-  opt = swd_ap_read(pins, 0, REG_AP_MEM_CSW, &val);
+  opt = swd_ap_read(pins, 0, 0, REG_AP_MEM_CSW, &val);
   assert(opt == 0);
   dump_ap_mem_csw(val);
-  opt = swd_ap_write(pins, 0, REG_AP_MEM_CSW, (val & ~0x07) | 0x04);
+  opt = swd_ap_write(pins, 0, REG_AP_MEM_CSW, (val & ~7) | 2);
   assert(opt == 0);
-  opt = swd_ap_read(pins, 0, REG_AP_MEM_CSW, &val);
-  printf("%s:%d: ret:%d:%s\n", __func__, __LINE__, opt, strerror(opt));
-  assert(opt == 0);
-  dump_ap_mem_csw(val);
 
-  opt = swd_ap_read(pins, 0, REG_AP_MEM_CFG, &val);
-  assert(opt == 0);
+  while (1) {
+    opt = swd_ap_read(pins, 0, 0, REG_AP_MEM_CFG, &val);
+  if (opt == EAGAIN) {
+    usleep(10000);
+    continue;
+  }
   dump_ap_mem_cfg(val);
-
+  break;
+  }
+  int supp_hi_addr = (val & 0x02);
   uint32_t hi, lo;
-
   hi = 0x00000000;
   lo = 0xe000ed00;
   opt = swd_ap_write(pins, 0, REG_AP_MEM_TAR_LO, lo);
   assert(opt == 0);
-  if (val & 0x02) {
+  if (supp_hi_addr) {
     opt = swd_ap_write(pins, 0, REG_AP_MEM_TAR_HI, hi);
+    assert(opt == 0);
+  }
+
+  while (1) {
+    opt = swd_ap_read(pins, 0, 0, REG_AP_MEM_DRW, &val);
+  printf("%s:%d: ret:%d:%s addr:%08x %08x val:%08x\n", __func__, __LINE__, opt, strerror(opt), hi, lo, val);
+  if (opt == 0) break;
+  opt = swd_ap_read(pins, 0, 0, REG_AP_MEM_CSW, &val);
+    if (opt == 0)
+      dump_ap_mem_csw(val);
     assert(opt == 0);
   }
 
