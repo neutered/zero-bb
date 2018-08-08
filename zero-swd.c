@@ -27,6 +27,8 @@
 #define STICKYORUN (1 << 1)
 #define ORUNDETECT (1 << 0)
 
+static int verbose;
+
 static void resync(struct pinctl* pins, int idle)
 {
   static const uint8_t bs[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00 };
@@ -70,12 +72,14 @@ static uint8_t opcode(int ap, int reg, int rw)
 static uint8_t send_op(struct pinctl* pins, int ap, int reg, int rw)
 {
   uint8_t op = opcode(ap, reg, rw);
-printf("%s:%d: op:%02x\n", __func__, __LINE__, op);
+  if (verbose)
+    printf("%s:%d: op:%02x\n", __func__, __LINE__, op);
   pins_write(pins, &op, 8);
 
   uint8_t status;
   pins_read(pins, &status, 3);
-printf("%s:%d: status:%02x\n", __func__, __LINE__, status);
+  if (verbose)
+    printf("%s:%d: status:%02x\n", __func__, __LINE__, status);
   return status;
 }
 
@@ -115,7 +119,6 @@ static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
 static int swd_write(struct pinctl* pins, int ap, int reg, uint32_t val)
 {
   uint8_t status = send_op(pins, ap, reg, 0);
-  fprintf(stderr, "%s:%d: status:%02x\n", __func__, __LINE__, status);
   if (status != 1) {
     if (status == 0x04)
       return -EFAULT;
@@ -210,6 +213,35 @@ static void dump_ap_idcode(uint32_t idcode)
   dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), idcode);
 }
 
+static void dump_ap_mem_csw(uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 31, "dbgswenable" },
+    { 30, 24, "prot" },
+    { 23, 23, "spiden" },
+    { 22, 16, "res0" },
+    { 15, 12, "type" },
+    { 11, 8, "mode" },
+    { 7, 7, "trinprog" },
+    { 6, 6, "deviceen" },
+    { 5, 4, "addrinc" },
+    { 3, 3, "res1" },
+    { 2, 0, "size" },
+  };
+  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
+}
+
+static void dump_ap_mem_cfg(uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 3, "res0" },
+    { 2, 2, "ld" },
+    { 1, 1, "la" },
+    { 0, 0, "be" },
+  };
+  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
+}
+
 static int swd_status(struct pinctl* c, uint32_t* status)
 {
   int err = swd_read(c, 0, REG_DP_STATUS, status);
@@ -217,7 +249,8 @@ static int swd_status(struct pinctl* c, uint32_t* status)
     fprintf(stderr, "%s:%d: swd_read(DP_STATUS):%d:%s\n", __func__, __LINE__, err, strerror(err));
     goto err_exit;
   }
-  dump_dp_status(*status);
+  if (verbose)
+    dump_dp_status(*status);
 err_exit:
   return err;
 }
@@ -238,7 +271,8 @@ static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
   /* ap reads are posted so we have to issue a dummy read */
   for (int i = 0; i < 2; i++) {
     rv = swd_read(c, 1, offset, out);
-    printf("%s:%d: %d ap:%02x:%08x\n", __func__, __LINE__, i, reg, *out);
+    if (verbose)
+      printf("%s:%d: %d ret:%d ap:%02x:%08x\n", __func__, __LINE__, i, rv, reg, *out);
     if (rv != 0) break;
   }
   return rv;
@@ -247,7 +281,7 @@ static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
 static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
 {
   int rv = swd_ap_read(c, ap, REG_AP_IDR, out);
-  if (rv == 0)
+  if (verbose && (rv == 0))
     dump_ap_idcode(*out);
   return rv;
 }
@@ -258,14 +292,18 @@ int main(int argc, char** argv)
   unsigned clock = 1000;
   int opt;
 
-  while ((opt = getopt(argc, argv, "c:")) != -1) {
+  while ((opt = getopt(argc, argv, "c:v")) != -1) {
     switch (opt) {
     case 'c':
       {
-	char* end;
-	clock = strtoul(optarg, &end, 0);
-	assert(end != optarg);
+        char* end;
+        clock = strtoul(optarg, &end, 0);
+        assert(end != optarg);
       }
+      break;
+
+    case 'v':
+      verbose = 1;
       break;
 
     default:
@@ -294,8 +332,7 @@ int main(int argc, char** argv)
   assert(opt == 0);
   do {
     opt = swd_status(pins, &idcode);
-    printf("%s:%d: rv:%d:%s status:%08x\n", __func__, __LINE__, opt, strerror(opt), idcode);
-assert(opt == 0);
+    assert(opt == 0);
   } while ((idcode & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) != (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK));
 
   /* select the ap, it should be a memory access class */
@@ -304,10 +341,10 @@ assert(opt == 0);
   assert(((idcode >> 13) & 0x0f) == 0x08);
   opt = swd_ap_read(pins, 0, 0x00, &idcode);
   assert(opt == 0);
-printf("%s:%d: mem ap csw:%08x\n", __func__, __LINE__, idcode);
+  dump_ap_mem_csw(idcode);
   opt = swd_ap_read(pins, 0, 0xf4, &idcode);
   assert(opt == 0);
-printf("%s:%d: mem ap cfg:%08x\n", __func__, __LINE__, idcode);
+  dump_ap_mem_cfg(idcode);
 
   rv = EXIT_SUCCESS;
 err_exit:
