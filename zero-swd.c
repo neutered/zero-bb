@@ -233,8 +233,15 @@ static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
   uint8_t bank = (reg >> 4) & 0x0f;
   uint8_t offset = (reg >> 0) & 0x0f;
   int rv = swd_ap_select(c, ap, bank);
-assert(rv == 0);
-  return swd_read(c, 1, offset, out);
+  if (rv != 0) return rv;
+
+  /* ap reads are posted so we have to issue a dummy read */
+  for (int i = 0; i < 2; i++) {
+    rv = swd_read(c, 1, offset, out);
+    printf("%s:%d: %d ap:%02x:%08x\n", __func__, __LINE__, i, reg, *out);
+    if (rv != 0) break;
+  }
+  return rv;
 }
 
 static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
@@ -292,12 +299,15 @@ assert(opt == 0);
   } while ((idcode & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) != (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK));
 
   /* select the ap, it should be a memory access class */
-  opt = swd_write(pins, 0, REG_DP_SELECT, 0 << 24);
-assert(opt == 0);
-
   opt = swd_ap_idcode(pins, 0, &idcode);
   assert(opt == 0);
   assert(((idcode >> 13) & 0x0f) == 0x08);
+  opt = swd_ap_read(pins, 0, 0x00, &idcode);
+  assert(opt == 0);
+printf("%s:%d: mem ap csw:%08x\n", __func__, __LINE__, idcode);
+  opt = swd_ap_read(pins, 0, 0xf4, &idcode);
+  assert(opt == 0);
+printf("%s:%d: mem ap cfg:%08x\n", __func__, __LINE__, idcode);
 
   rv = EXIT_SUCCESS;
 err_exit:
