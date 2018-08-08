@@ -14,6 +14,19 @@
 
 #define REG_AP_IDR 0xfc
 
+#define REG_AP_MEM_CSW 0x00
+#define REG_AP_MEM_TAR_LO 0x04
+#define REG_AP_MEM_TAR_HI 0x08
+#define REG_AP_MEM_DRW 0x0c
+#define REG_AP_MEM_BD0 0x10
+#define REG_AP_MEM_BD1 0x14
+#define REG_AP_MEM_BD2 0x18
+#define REG_AP_MEM_BD3 0x1c
+#define REG_AP_MEM_MBT 0x20
+#define REG_AP_MEM_BASE_HI 0xf0
+#define REG_AP_MEM_CFG 0xf4
+#define REG_AP_MEM_BASE_LO 0xf8
+
 #define CSYSPWRUPACK (1 << 31)
 #define CSYSPWRUPREQ (1 << 30)
 #define CDBGPWRUPACK (1 << 29)
@@ -88,12 +101,13 @@ static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
   uint8_t status = send_op(pins, ap, reg, 1);
   if (status != 1) {
     if (status == 0x04)
-      return -EFAULT;
+      return EFAULT;
     else if (status == 0x02)
-      return -EAGAIN;
+      return EAGAIN;
     else
       fprintf(stderr, "%s:%d: unhandled status:%02x\n", __func__, __LINE__, status);
     assert(0);
+    return EIO;
   }
 
   /* 32-bit data + parity */
@@ -104,7 +118,7 @@ static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
     n += __builtin_popcount(bs[i]);
   if ((n & 1) != (bs[4] & 0x01)) {
     fprintf(stderr, "%s:%d: parity:%02x n:%d\n", __func__, __LINE__, bs[4], n);
-    return -EIO;
+    return EIO;
   }
 
   /* convert out of lsb-first order */
@@ -121,12 +135,13 @@ static int swd_write(struct pinctl* pins, int ap, int reg, uint32_t val)
   uint8_t status = send_op(pins, ap, reg, 0);
   if (status != 1) {
     if (status == 0x04)
-      return -EFAULT;
+      return EFAULT;
     else if (status == 0x02)
-      return -EAGAIN;
+      return EAGAIN;
     else
       fprintf(stderr, "%s:%d: unhandled status:%02x\n", __func__, __LINE__, status);
     assert(0);
+    return EIO;
   }
 
   /* 32-bit data + parity */
@@ -278,6 +293,15 @@ static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
   return rv;
 }
 
+static int swd_ap_write(struct pinctl* c, int ap, uint8_t reg, uint32_t val)
+{
+  uint8_t bank = (reg >> 4) & 0x0f;
+  uint8_t offset = (reg >> 0) & 0x0f;
+  int rv = swd_ap_select(c, ap, bank);
+  if (rv != 0) return rv;
+  return swd_write(c, 1, offset, val);
+}
+
 static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
 {
   int rv = swd_ap_read(c, ap, REG_AP_IDR, out);
@@ -320,31 +344,50 @@ int main(int argc, char** argv)
   resync(pins, 1);
 
   /* reading id takes the debug port out of reset */
-  uint32_t idcode;
-  if ((opt = swd_read(pins, 0, REG_DP_IDCODE, &idcode)) != 0) {
+  uint32_t val;
+  if ((opt = swd_read(pins, 0, REG_DP_IDCODE, &val)) != 0) {
     fprintf(stderr, "%s:%d: swd_read(IDCODE):%d:%s\n", __func__, __LINE__, opt, strerror(opt));
     goto err_exit;
   }
-  printf("%s:%d: idcode:%08x\n", __func__, __LINE__, idcode);
+  printf("%s:%d: idcode:%08x\n", __func__, __LINE__, val);
 
   /* set power state */
   opt = swd_write(pins, 0, REG_DP_STATUS, CSYSPWRUPREQ | CDBGPWRUPREQ | CDBGRSTREQ);
   assert(opt == 0);
   do {
-    opt = swd_status(pins, &idcode);
+    opt = swd_status(pins, &val);
     assert(opt == 0);
-  } while ((idcode & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) != (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK));
+  } while ((val & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) != (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK));
 
   /* select the ap, it should be a memory access class */
-  opt = swd_ap_idcode(pins, 0, &idcode);
+  opt = swd_ap_idcode(pins, 0, &val);
   assert(opt == 0);
-  assert(((idcode >> 13) & 0x0f) == 0x08);
-  opt = swd_ap_read(pins, 0, 0x00, &idcode);
+  assert(((val >> 13) & 0x0f) == 0x08);
+
+  opt = swd_ap_read(pins, 0, REG_AP_MEM_CSW, &val);
   assert(opt == 0);
-  dump_ap_mem_csw(idcode);
-  opt = swd_ap_read(pins, 0, 0xf4, &idcode);
+  dump_ap_mem_csw(val);
+  opt = swd_ap_write(pins, 0, REG_AP_MEM_CSW, (val & ~0x07) | 0x04);
   assert(opt == 0);
-  dump_ap_mem_cfg(idcode);
+  opt = swd_ap_read(pins, 0, REG_AP_MEM_CSW, &val);
+  printf("%s:%d: ret:%d:%s\n", __func__, __LINE__, opt, strerror(opt));
+  assert(opt == 0);
+  dump_ap_mem_csw(val);
+
+  opt = swd_ap_read(pins, 0, REG_AP_MEM_CFG, &val);
+  assert(opt == 0);
+  dump_ap_mem_cfg(val);
+
+  uint32_t hi, lo;
+
+  hi = 0x00000000;
+  lo = 0xe000ed00;
+  opt = swd_ap_write(pins, 0, REG_AP_MEM_TAR_LO, lo);
+  assert(opt == 0);
+  if (val & 0x02) {
+    opt = swd_ap_write(pins, 0, REG_AP_MEM_TAR_HI, hi);
+    assert(opt == 0);
+  }
 
   rv = EXIT_SUCCESS;
 err_exit:
