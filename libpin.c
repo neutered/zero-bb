@@ -112,7 +112,7 @@ struct pinctl* pins_open(unsigned clock)
   rv->fd = -1;
   rv->regs = MAP_FAILED;
   rv->phase = phase;
-  rv->last_rw_op = -1;
+  rv->last_rw_op = 1;
 
   rv->fd = open("/dev/gpiomem", O_RDWR);
   if (rv->fd == -1) {
