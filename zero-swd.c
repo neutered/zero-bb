@@ -12,6 +12,8 @@
 #define REG_DP_SELECT 0x08
 #define REG_DP_RDBUFF 0x0c
 
+#define REG_AP_IDR 0xfc
+
 #define CSYSPWRUPACK (1 << 31)
 #define CSYSPWRUPREQ (1 << 30)
 #define CDBGPWRUPACK (1 << 29)
@@ -226,16 +228,18 @@ static int swd_ap_select(struct pinctl* c, uint8_t sel, uint8_t bank)
   return swd_write(c, 0, REG_DP_SELECT, val);
 }
 
-static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
+static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
 {
-  uint8_t bank = (0xfc >> 4) & 0x0f;
-  uint8_t reg = (0xfc >> 0) & 0x0f;
+  uint8_t bank = (reg >> 4) & 0x0f;
+  uint8_t offset = (reg >> 0) & 0x0f;
   int rv = swd_ap_select(c, ap, bank);
 assert(rv == 0);
-  rv = swd_read(c, 1, reg, out);
-  assert(rv == 0);
-  rv = swd_read(c, 0, 0x0c, out);
-  assert(rv == 0);
+  return swd_read(c, 1, offset, out);
+}
+
+static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
+{
+  int rv = swd_ap_read(c, ap, REG_AP_IDR, out);
   if (rv == 0)
     dump_ap_idcode(*out);
   return rv;
