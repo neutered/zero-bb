@@ -82,33 +82,42 @@ static uint8_t opcode(int ap, int reg, int rw)
  *  [1] - xxx
  *  [2] - yyy
  */
-static uint8_t send_op(struct pinctl* pins, int ap, int reg, int rw)
+static int send_op(struct pinctl* pins, int ap, int reg, int rw)
 {
   uint8_t op = opcode(ap, reg, rw);
   if (verbose)
-    printf("%s:%d: op:%02x\n", __func__, __LINE__, op);
-  pins_write(pins, &op, 8);
+    fprintf(stderr, "%s:%d: ap:%d reg:%02x rw:%d op:%02x\n", __func__, __LINE__, ap, reg, rw, op);
 
-  uint8_t status;
-  pins_read(pins, &status, 3);
-  if (verbose)
-    printf("%s:%d: status:%02x\n", __func__, __LINE__, status);
-  return status;
+  for (int i = 0; i < 4; i++) {
+    pins_write(pins, &op, 8);
+
+    uint8_t status;
+    pins_read(pins, &status, 3);
+    if (verbose)
+      fprintf(stderr, "%s:%d: try:%d status:%02x\n", __func__, __LINE__, i, status);
+    switch (status) {
+    case 1:
+      return 0;
+    case 2:
+      /* FixMe: what's a good delay? does it depend on the outstanding op? */
+      usleep(10000);
+      break;
+    case 4:
+      return EFAULT;
+    default:
+      fprintf(stderr, "%s:%d: unhandled status:%02x\n", __func__, __LINE__, status);
+      assert(0);
+      return EIO;
+    }
+  }
+
+  return EAGAIN;
 }
 
 static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
 {
-  uint8_t status = send_op(pins, ap, reg, 1);
-  if (status != 1) {
-    if (status == 0x04)
-      return EFAULT;
-    else if (status == 0x02)
-      return EAGAIN;
-    else
-      fprintf(stderr, "%s:%d: unhandled status:%02x\n", __func__, __LINE__, status);
-    assert(0);
-    return EIO;
-  }
+  int rv = send_op(pins, ap, reg, 1);
+  if (rv != 0) return rv;
 
   /* 32-bit data + parity */
   uint8_t bs[4 + 1];
@@ -124,25 +133,16 @@ static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
   /* convert out of lsb-first order */
   if (val)
     *val = ((bs[3] << 24) |
-	    (bs[2] << 16) |
-	    (bs[1] << 8) |
-	    (bs[0] << 0));
+            (bs[2] << 16) |
+            (bs[1] << 8) |
+            (bs[0] << 0));
   return 0;
 }
 
 static int swd_write(struct pinctl* pins, int ap, int reg, uint32_t val)
 {
-  uint8_t status = send_op(pins, ap, reg, 0);
-  if (status != 1) {
-    if (status == 0x04)
-      return EFAULT;
-    else if (status == 0x02)
-      return EAGAIN;
-    else
-      fprintf(stderr, "%s:%d: unhandled status:%02x\n", __func__, __LINE__, status);
-    assert(0);
-    return EIO;
-  }
+  int rv = send_op(pins, ap, reg, 0);
+  if (rv != 0) return rv;
 
   /* 32-bit data + parity */
   uint8_t bs[4 + 1];
@@ -163,15 +163,15 @@ struct port_field_desc {
 
 static void dump_reg(const char* f, const struct port_field_desc* fs, unsigned nfs, uint32_t reg)
 {
-  printf("%s: reg:%08x:", f, reg);
+  fprintf(stderr, "%s: reg:%08x:", f, reg);
   for (int i = 0; i < nfs; i++) {
     const uint32_t mask = (((1ull << (fs[i].hi + 1)) - 1) &
                            (~0ul << fs[i].lo));
     const uint32_t val = (reg & mask) >> fs[i].lo;
     if (val)
-      printf("%s:%x ", fs[i].name, val);
+      fprintf(stderr, "%s:%x ", fs[i].name, val);
   }
-  printf("\n");
+  fprintf(stderr, "\n");
 }
 static void dump_dp_status(uint32_t status)
 {
@@ -276,26 +276,31 @@ static int swd_ap_select(struct pinctl* c, uint8_t sel, uint8_t bank)
   return swd_write(c, 0, REG_DP_SELECT, val);
 }
 
-static int swd_ap_read(struct pinctl* c, int retry, int ap, uint8_t reg, uint32_t* out)
+static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
 {
   uint8_t bank = (reg >> 4) & 0x0f;
   uint8_t offset = (reg >> 0) & 0x0f;
-  int rv = swd_ap_select(c, ap, bank);
+  int rv;
+
+  rv = swd_ap_select(c, ap, bank);
+  assert(rv == 0);
   if (rv != 0) return rv;
 
-retry:
-  /* ap reads are posted so we have to issue a dummy read */
-  for (int i = 0; i < 2; i++) {
-    rv = swd_read(c, 1, offset, out);
-    if (retry && (rv == EAGAIN)) {
-      usleep(1000);
-      goto retry;
-    }
-    if (rv != 0) break;
-  }
+  /* ap reads are posted so we issue the read and then use the dp
+   * RDBUFF to get the read, to avoid possibly auto incroementing on
+   * ap mem accesses.
+   */
+  rv = swd_read(c, 1, offset, out);
+  assert(rv == 0);
+  if (rv != 0) return rv;
+
+  rv = swd_read(c, 0, REG_DP_RDBUFF, out);
+  assert(rv == 0);
+  if (rv != 0) return rv;
+
   if (verbose)
-    printf("%s:%d: ap:%02x:%08x\n", __func__, __LINE__, reg, *out);
-  return rv;
+    fprintf(stderr, "%s:%d: ap:%02x:%08x\n", __func__, __LINE__, reg, *out);
+  return 0;
 }
 
 static int swd_ap_write(struct pinctl* c, int ap, uint8_t reg, uint32_t val)
@@ -309,10 +314,80 @@ static int swd_ap_write(struct pinctl* c, int ap, uint8_t reg, uint32_t val)
 
 static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
 {
-  int rv = swd_ap_read(c, 0, ap, REG_AP_IDR, out);
+  int rv = swd_ap_read(c, ap, REG_AP_IDR, out);
   if (verbose && (rv == 0))
     dump_ap_idcode(*out);
   return rv;
+}
+
+static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs, size_t nb)
+{
+  /* if addr isn't aligned don't bother w/ the multi-byte bit */
+  size_t n_aligned, n_un;
+
+  if (1 | addr & 0x03) {
+    n_aligned = 0;
+    n_un = nb;
+  } else {
+    n_aligned = nb / 4;
+    n_un = nb % 4;
+  }
+
+  uint32_t cfg, csw;
+  int err;
+
+  err = swd_ap_read(c, ap, REG_AP_MEM_CFG, &cfg);
+  assert(err == 0);
+  if (verbose)
+    dump_ap_mem_cfg(cfg);
+  err = swd_ap_read(c, ap, REG_AP_MEM_CSW, &csw);
+  assert(err == 0);
+  if (verbose)
+    dump_ap_mem_csw(csw);
+
+  err = swd_ap_write(c, ap, REG_AP_MEM_TAR_LO, (addr >> 0) & 0xffffffff);
+  assert(err == 0);
+  if (cfg & 0x02) {
+    err = swd_ap_write(c, ap, REG_AP_MEM_TAR_HI, (addr >> 32) & 0xffffffff);
+    assert(err == 0);
+  }
+
+  uint32_t val;
+  if (n_aligned > 0) {
+    /* set 32-bit transfer size and auto-increment on access */
+    err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (1 << 4) | (2 << 0));
+    assert(err == 0);
+
+    for (int i = 0; i < n_aligned; i++) {
+      err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
+      assert(err == 0);
+      memcpy(bs, &val, 4);
+      bs += 4;
+    }
+  }
+
+  if (n_un > 0) {
+    /* set 8-bit transfer size and auto-increment on access */
+    err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((1 << 4) | (7 << 0))) | (1 << 4) | (0 << 0));
+    assert(err == 0);
+
+    for (int i = 0; i < n_un; i++) {
+      err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
+      *bs++ = val & 0xff;
+    }
+  }
+
+  return 0;
+}
+
+static void hexdump(const char* tag, const uint8_t* bs, size_t nb)
+{
+  for (int i = 0; i < nb; i += 16) {
+    printf("%s %04x:", tag, i);
+    for (int j = 0; j < 16 && i + j < nb; j++)
+      printf("%02x ", bs[i + j]);
+    printf("\n");
+  }
 }
 
 int main(int argc, char** argv)
@@ -364,46 +439,17 @@ int main(int argc, char** argv)
     assert(opt == 0);
   } while ((val & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) != (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK));
 
-  /* select the ap, it should be a memory access class */
+  /* it should be a memory access class */
   opt = swd_ap_idcode(pins, 0, &val);
   assert(opt == 0);
   assert(((val >> 13) & 0x0f) == 0x08);
 
-  opt = swd_ap_read(pins, 0, 0, REG_AP_MEM_CSW, &val);
+  uint8_t bs[64] = { 0x13 };
+#define min(x, y) (((x) < (y)) ? (x) : (y))
+  size_t nb = min(4, sizeof(bs));
+  opt = swd_ap_mem_read(pins, 0, 0xe000ed10, bs, nb);
   assert(opt == 0);
-  dump_ap_mem_csw(val);
-  opt = swd_ap_write(pins, 0, REG_AP_MEM_CSW, (val & ~7) | 2);
-  assert(opt == 0);
-
-  while (1) {
-    opt = swd_ap_read(pins, 0, 0, REG_AP_MEM_CFG, &val);
-  if (opt == EAGAIN) {
-    usleep(10000);
-    continue;
-  }
-  dump_ap_mem_cfg(val);
-  break;
-  }
-  int supp_hi_addr = (val & 0x02);
-  uint32_t hi, lo;
-  hi = 0x00000000;
-  lo = 0xe000ed00;
-  opt = swd_ap_write(pins, 0, REG_AP_MEM_TAR_LO, lo);
-  assert(opt == 0);
-  if (supp_hi_addr) {
-    opt = swd_ap_write(pins, 0, REG_AP_MEM_TAR_HI, hi);
-    assert(opt == 0);
-  }
-
-  while (1) {
-    opt = swd_ap_read(pins, 0, 0, REG_AP_MEM_DRW, &val);
-  printf("%s:%d: ret:%d:%s addr:%08x %08x val:%08x\n", __func__, __LINE__, opt, strerror(opt), hi, lo, val);
-  if (opt == 0) break;
-  opt = swd_ap_read(pins, 0, 0, REG_AP_MEM_CSW, &val);
-    if (opt == 0)
-      dump_ap_mem_csw(val);
-    assert(opt == 0);
-  }
+  hexdump("scr", bs, sizeof(bs));
 
   rv = EXIT_SUCCESS;
 err_exit:
