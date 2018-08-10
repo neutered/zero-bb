@@ -322,17 +322,6 @@ static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
 
 static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs, size_t nb)
 {
-  /* if addr isn't aligned don't bother w/ the multi-byte bit */
-  size_t n_aligned, n_un;
-
-  if (1 | addr & 0x03) {
-    n_aligned = 0;
-    n_un = nb;
-  } else {
-    n_aligned = nb / 4;
-    n_un = nb % 4;
-  }
-
   uint32_t cfg, csw;
   int err;
 
@@ -345,6 +334,22 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
   if (verbose)
     dump_ap_mem_csw(csw);
 
+  /* set 32-bit transfer size and auto-increment on access */
+  err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (1 << 4) | (2 << 0));
+  assert(err == 0);
+
+  /* the DWR access always returns 32-bits regardless of the size set
+   * in CSW (ie, not a single byte if that's set). align the start/end
+   * addresses and the device aligned bits regardless of the host
+   * address alignment.
+   */
+  unsigned slop_head = (addr & 0x03);
+  if (slop_head) {
+    nb -= (4 - slop_head);
+    addr -= slop_head;
+  }
+  assert((addr & 0x03) == 0);
+
   err = swd_ap_write(c, ap, REG_AP_MEM_TAR_LO, (addr >> 0) & 0xffffffff);
   assert(err == 0);
   if (cfg & 0x02) {
@@ -352,30 +357,17 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     assert(err == 0);
   }
 
+  assert(slop_head == 0);
+
   uint32_t val;
-  if (n_aligned > 0) {
-    /* set 32-bit transfer size and auto-increment on access */
-    err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (1 << 4) | (2 << 0));
+  for (int i = 0; i < nb / 4; i++) {
+    err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
-
-    for (int i = 0; i < n_aligned; i++) {
-      err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
-      assert(err == 0);
-      memcpy(bs, &val, 4);
-      bs += 4;
-    }
+    memcpy(bs, &val, 4);
+    bs += 4;
   }
 
-  if (n_un > 0) {
-    /* set 8-bit transfer size and auto-increment on access */
-    err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((1 << 4) | (7 << 0))) | (1 << 4) | (0 << 0));
-    assert(err == 0);
-
-    for (int i = 0; i < n_un; i++) {
-      err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
-      *bs++ = val & 0xff;
-    }
-  }
+  assert(nb % 4 == 0);
 
   return 0;
 }
@@ -444,10 +436,11 @@ int main(int argc, char** argv)
   assert(opt == 0);
   assert(((val >> 13) & 0x0f) == 0x08);
 
-  uint8_t bs[64] = { 0x13 };
+  uint8_t bs[256];
 #define min(x, y) (((x) < (y)) ? (x) : (y))
-  size_t nb = min(4, sizeof(bs));
-  opt = swd_ap_mem_read(pins, 0, 0xe000ed10, bs, nb);
+  size_t nb = min(sizeof(bs), sizeof(bs));
+memset(bs, 0x13, sizeof(bs));
+  opt = swd_ap_mem_read(pins, 0, 0xe000ed00, bs, nb);
   assert(opt == 0);
   hexdump("scr", bs, sizeof(bs));
 
