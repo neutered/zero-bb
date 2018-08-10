@@ -346,10 +346,10 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
   unsigned slop_head = (addr & 0x03);
   if (slop_head) {
     nb -= (4 - slop_head);
-    addr -= slop_head;
+    addr &= ~0x03;
   }
+  unsigned slop_tail = (nb & 0x03);
   assert((addr & 0x03) == 0);
-
   err = swd_ap_write(c, ap, REG_AP_MEM_TAR_LO, (addr >> 0) & 0xffffffff);
   assert(err == 0);
   if (cfg & 0x02) {
@@ -357,17 +357,43 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     assert(err == 0);
   }
 
-  assert(slop_head == 0);
-
   uint32_t val;
+  if (slop_head) {
+    err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
+    assert(err == 0);
+    switch (slop_head) {
+    case 1: *bs++ = (val >> 8) & 0xff;
+    case 2: *bs++ = (val >> 16) & 0xff;
+    case 3: *bs++ = (val >> 24) & 0xff;
+      break;
+
+    efault:
+      assert(0);
+    }
+  }
+
   for (int i = 0; i < nb / 4; i++) {
     err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
-    memcpy(bs, &val, 4);
-    bs += 4;
+    *bs++ = (val >> 0) & 0xff;
+    *bs++ = (val >> 8) & 0xff;
+    *bs++ = (val >> 16) & 0xff;
+    *bs++ = (val >> 24) & 0xff;
   }
 
-  assert(nb % 4 == 0);
+  if (slop_tail) {
+    err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
+    assert(err == 0);
+    switch (slop_tail) {
+      case 3: *bs++ = (val >> 8) & 0xff;
+      case 2: *bs++ = (val >> 16) & 0xff;
+      case 1: *bs++ = (val >> 24) & 0xff;
+        break;
+
+      default:
+        assert(0);
+    }
+  }
 
   return 0;
 }
@@ -436,11 +462,23 @@ int main(int argc, char** argv)
   assert(opt == 0);
   assert(((val >> 13) & 0x0f) == 0x08);
 
-  uint8_t bs[256];
+  uint8_t bs[0x20];
 #define min(x, y) (((x) < (y)) ? (x) : (y))
   size_t nb = min(sizeof(bs), sizeof(bs));
 memset(bs, 0x13, sizeof(bs));
   opt = swd_ap_mem_read(pins, 0, 0xe000ed00, bs, nb);
+  assert(opt == 0);
+  hexdump("scr", bs, sizeof(bs));
+
+  nb = min(1, sizeof(bs));
+memset(bs, 0x13, sizeof(bs));
+  opt = swd_ap_mem_read(pins, 0, 0xe000ed03, bs, nb);
+  assert(opt == 0);
+  hexdump("scr", bs, sizeof(bs));
+
+  nb = min(20, sizeof(bs));
+memset(bs, 0x13, sizeof(bs));
+  opt = swd_ap_mem_read(pins, 0, 0xe000ed03, bs, nb);
   assert(opt == 0);
   hexdump("scr", bs, sizeof(bs));
 
