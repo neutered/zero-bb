@@ -257,6 +257,69 @@ static void dump_ap_mem_cfg(uint32_t val)
   dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
+static void dump_reg_cpuid(uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 24, "implementer" },
+    { 23, 20, "variant" },
+    { 19, 16, "fixed" },
+    { 15, 4, "partno" },
+    { 3, 0, "revision" },
+  };
+  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
+}
+
+static void dump_reg_dhcsr(uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 26, "reserved0" }, // top part of dbg key for writes
+    { 25, 25, "s_reset_st" },
+    { 24, 24, "s_retire_st" },
+    { 23, 18, "reserved1" },
+    { 17, 17, "s_halt" },
+    { 16, 16, "s_regrdy" },
+    { 15, 4, "reserved2" },
+    { 3, 3, "c_maskints" },
+    { 2, 2, "c_step" },
+    { 1, 1, "c_halt" },
+    { 0, 0, "c_debugen" },
+  };
+  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
+}
+
+static void hexdump(const char* tag, const uint8_t* bs, size_t nb)
+{
+  for (int i = 0; i < nb; i += 16) {
+    printf("%s %04x:", tag, i);
+    for (int j = 0; j < 16 && i + j < nb; j++)
+      printf("%02x ", bs[i + j]);
+    printf("\n");
+  }
+}
+
+static void default_dumper_mem(uint64_t addr, const uint8_t* bs, size_t nb)
+{
+  char backing[16 + 1];
+  const char* label = backing;
+  void (*reg)(uint32_t) = NULL;
+  if (nb == 4) {
+    switch (addr) {
+    case 0xe000ed00: label = "cpuid"; reg = dump_reg_cpuid; break;
+    case 0xe000edf0: label = "dhcsr"; reg = dump_reg_dhcsr; break;
+    default: goto label_addr;
+    }
+  } else {
+label_addr:
+    if (addr & 0xffffffff00000000)
+      sprintf(backing, "%016llx", addr);
+    else
+      sprintf(backing, "%08x", (uint32_t)addr);
+  }
+  hexdump(label, bs, nb);
+  if (reg)
+    (*reg)(*(uint32_t*)bs);
+}
+
 static int swd_status(struct pinctl* c, uint32_t* status)
 {
   int err = swd_read(c, 0, REG_DP_STATUS, status);
@@ -367,7 +430,7 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     case 3: *bs++ = (val >> 24) & 0xff;
       break;
 
-    efault:
+    default:
       assert(0);
     }
   }
@@ -398,14 +461,95 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
   return 0;
 }
 
-static void hexdump(const char* tag, const uint8_t* bs, size_t nb)
+static int swd_ap_mem_write(struct pinctl* c, int ap, uint64_t addr, const uint8_t* bs, size_t nb)
 {
-  for (int i = 0; i < nb; i += 16) {
-    printf("%s %04x:", tag, i);
-    for (int j = 0; j < 16 && i + j < nb; j++)
-      printf("%02x ", bs[i + j]);
-    printf("\n");
+  uint32_t cfg, csw;
+  int err;
+
+  err = swd_ap_read(c, ap, REG_AP_MEM_CFG, &cfg);
+  assert(err == 0);
+  if (verbose)
+    dump_ap_mem_cfg(cfg);
+  err = swd_ap_read(c, ap, REG_AP_MEM_CSW, &csw);
+  assert(err == 0);
+  if (verbose)
+    dump_ap_mem_csw(csw);
+
+  /* set 32-bit transfer size and auto-increment on access */
+  err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (1 << 4) | (2 << 0));
+  assert(err == 0);
+
+  /* the DWR access always returns 32-bits regardless of the size set
+   * in CSW (ie, not a single byte if that's set). align the start/end
+   * addresses and the device aligned bits regardless of the host
+   * address alignment.
+   */
+  unsigned slop_head = (addr & 0x03);
+  if (slop_head) {
+    nb -= (4 - slop_head);
+    addr &= ~0x03;
   }
+  unsigned slop_tail = (nb & 0x03);
+  assert((addr & 0x03) == 0);
+  err = swd_ap_write(c, ap, REG_AP_MEM_TAR_LO, (addr >> 0) & 0xffffffff);
+  assert(err == 0);
+  if (cfg & 0x02) {
+    err = swd_ap_write(c, ap, REG_AP_MEM_TAR_HI, (addr >> 32) & 0xffffffff);
+    assert(err == 0);
+  }
+
+  uint32_t val;
+  if (slop_head) {
+    err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
+    assert(err == 0);
+    switch (slop_head) {
+// case 1: *bs++ = (val >> 8) & 0xff;
+// case 2: *bs++ = (val >> 16) & 0xff;
+// case 3: *bs++ = (val >> 24) & 0xff;
+// break;
+
+    default:
+      assert(0);
+    }
+  }
+
+  for (int i = 0; i < nb / 4; i++) {
+    err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
+    assert(err == 0);
+// *bs++ = (val >> 0) & 0xff;
+// *bs++ = (val >> 8) & 0xff;
+// *bs++ = (val >> 16) & 0xff;
+// *bs++ = (val >> 24) & 0xff;
+  }
+
+  if (slop_tail) {
+    err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
+    assert(err == 0);
+    switch (slop_tail) {
+// case 3: *bs++ = (val >> 8) & 0xff;
+// case 2: *bs++ = (val >> 16) & 0xff;
+// case 1: *bs++ = (val >> 24) & 0xff;
+// break;
+
+      default:
+        assert(0);
+    }
+  }
+
+  return 0;
+}
+
+static int swd_ap_mem_read_u32(struct pinctl* c, int ap, uint64_t addr, uint32_t* val)
+{
+  int rv = swd_ap_mem_read(c, 0, addr, (uint8_t*)val, sizeof(*val));
+  if (verbose && (rv == 0))
+    default_dumper_mem(addr, (uint8_t*)val, sizeof(*val));
+  return rv;
+}
+
+static int swd_ap_mem_write_u32(struct pinctl* c, int ap, uint64_t addr, const char* label, const uint32_t val)
+{
+  return swd_ap_mem_write(c, 0, addr, (uint8_t*)&val, sizeof(val));
 }
 
 int main(int argc, char** argv)
@@ -462,25 +606,26 @@ int main(int argc, char** argv)
   assert(opt == 0);
   assert(((val >> 13) & 0x0f) == 0x08);
 
-  uint8_t bs[0x20];
-#define min(x, y) (((x) < (y)) ? (x) : (y))
-  size_t nb = min(sizeof(bs), sizeof(bs));
-memset(bs, 0x13, sizeof(bs));
-  opt = swd_ap_mem_read(pins, 0, 0xe000ed00, bs, nb);
+  /* it doesn't matter about the cpuid, but it's informational */
+  opt = swd_ap_mem_read_u32(pins, 0, 0xe000ed00, &val);
   assert(opt == 0);
-  hexdump("scr", bs, sizeof(bs));
 
-  nb = min(1, sizeof(bs));
-memset(bs, 0x13, sizeof(bs));
-  opt = swd_ap_mem_read(pins, 0, 0xe000ed03, bs, nb);
+  /* halt the processor before futzing w/ flash. just for yucks, we do
+   * the double read to check if it's still in reset.
+   */
+  opt = swd_ap_mem_read_u32(pins, 0, 0xe000edf0, &val);
   assert(opt == 0);
-  hexdump("scr", bs, sizeof(bs));
-
-  nb = min(20, sizeof(bs));
-memset(bs, 0x13, sizeof(bs));
-  opt = swd_ap_mem_read(pins, 0, 0xe000ed03, bs, nb);
-  assert(opt == 0);
-  hexdump("scr", bs, sizeof(bs));
+  if (val & (1 << 25)) {
+    opt = swd_ap_mem_read_u32(pins, 0, 0xe000edf0, &val);
+    assert(opt == 0);
+    if (val & (1 << 25))
+      printf("%s:%d: held in reset\n", __func__, __LINE__);
+  }
+  if (!(val & (1 << 17))) {
+    val = (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0);
+// opt = swd_ap_mem_write_u32(pins, 0, 0xe000edf0, "dhcsr", val);
+// assert(opt == 0);
+  }
 
   rv = EXIT_SUCCESS;
 err_exit:
