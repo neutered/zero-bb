@@ -599,7 +599,7 @@ static int swd_ap_mem_read_u32(struct pinctl* c, int ap, uint64_t addr, uint32_t
   return swd_ap_mem_read(c, 0, addr, (uint8_t*)val, sizeof(*val));
 }
 
-static int swd_ap_mem_write_u32(struct pinctl* c, int ap, uint64_t addr, const char* label, const uint32_t val)
+static int swd_ap_mem_write_u32(struct pinctl* c, int ap, uint64_t addr, const uint32_t val)
 {
   return swd_ap_mem_write(c, 0, addr, (uint8_t*)&val, sizeof(val));
 }
@@ -671,23 +671,39 @@ int main(int argc, char** argv)
     opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
     assert(opt == 0);
     if (val & (1 << 25))
-      printf("%s:%d: held in reset\n", __func__, __LINE__);
+      printf("%s:%d: held in reset?\n", __func__, __LINE__);
   }
-  #if 1
+
+  /* halt and enable debug */
   if (!(val & (1 << 17))) {
     val = (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0);
-    opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, "dhcsr", val);
+    opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, val);
     assert(opt == 0);
-    opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
-    assert(opt == 0);
+    int i;
+    for (i = 0; i < 8; i++) {
+      usleep(250000);
+      opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
+      assert(opt == 0);
+      if (val & (1 << 17)) break;
+    }
+    printf("%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
   }
-  #endif
-  opt = swd_ap_mem_read_u32(pins, 0, REG_AIRCR, &val);
-  assert(opt == 0);
+
+  /* set to hold after reset and hit the reset */
   opt = swd_ap_mem_read_u32(pins, 0, REG_DEMCR, &val);
   assert(opt == 0);
+  opt = swd_ap_mem_write_u32(pins, 0, REG_DEMCR, val | (1 << 0));
+  assert(opt == 0);
+  opt = swd_ap_mem_read_u32(pins, 0, REG_AIRCR, &val);
+  assert(opt == 0);
+  opt = swd_ap_mem_write_u32(pins, 0, REG_AIRCR, val | (1 << 2));
+  assert(opt == 0);
+  opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
+  assert(opt == 0);
 
-  opt = swd_ap_mem_read_u32(pins, 0, REG_FTFL_STAT, &val);
+  /* check on the flash unit, these are 8-bit */
+  uint8_t ftfl[4];
+  opt = swd_ap_mem_read(pins, 0, REG_FTFL_STAT, ftfl, sizeof(ftfl));
   assert(opt == 0);
 
   rv = EXIT_SUCCESS;
