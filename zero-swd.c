@@ -14,6 +14,13 @@
 
 #define REG_AP_IDR 0xfc
 
+#define REG_CPUID 0xe000ed00
+#define REG_AIRCR 0xe000ed0c
+#define REG_DHCSR 0xe000edf0
+#define REG_DEMCR 0xe000edfc
+
+#define REG_FTFL_STAT 0x40020000
+
 #define REG_AP_MEM_CSW 0x00
 #define REG_AP_MEM_TAR_LO 0x04
 #define REG_AP_MEM_TAR_HI 0x08
@@ -85,7 +92,7 @@ static uint8_t opcode(int ap, int reg, int rw)
 static int send_op(struct pinctl* pins, int ap, int reg, int rw)
 {
   uint8_t op = opcode(ap, reg, rw);
-  if (verbose)
+  if (verbose > 1)
     fprintf(stderr, "%s:%d: ap:%d reg:%02x rw:%d op:%02x\n", __func__, __LINE__, ap, reg, rw, op);
 
   for (int i = 0; i < 4; i++) {
@@ -93,7 +100,7 @@ static int send_op(struct pinctl* pins, int ap, int reg, int rw)
 
     uint8_t status;
     pins_read(pins, &status, 3);
-    if (verbose)
+    if (verbose > 2)
       fprintf(stderr, "%s:%d: try:%d status:%02x\n", __func__, __LINE__, i, status);
     switch (status) {
     case 1:
@@ -161,9 +168,9 @@ struct port_field_desc {
   const char* name;
 };
 
-static void dump_reg(const char* f, const struct port_field_desc* fs, unsigned nfs, uint32_t reg)
+static void dump_reg(const char* func, const char* label, const struct port_field_desc* fs, unsigned nfs, uint32_t reg)
 {
-  fprintf(stderr, "%s: reg:%08x:", f, reg);
+  fprintf(stderr, "%s: %s:%08x:", func, label, reg);
   for (int i = 0; i < nfs; i++) {
     const uint32_t mask = (((1ull << (fs[i].hi + 1)) - 1) &
                            (~0ul << fs[i].lo));
@@ -193,7 +200,7 @@ static void dump_dp_status(uint32_t status)
     { 1, 1, "stickyorun" },
     { 0, 0, "orundetect" },
   };
-  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), status);
+  dump_reg(__func__, "dp_status", fields, sizeof(fields) / sizeof(fields[0]), status);
 }
 
 static void dump_ap_status(uint32_t status)
@@ -211,7 +218,7 @@ static void dump_ap_status(uint32_t status)
     { 3, 3, "res1" },
     { 2, 0, "size" },
   };
-  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), status);
+  dump_reg(__func__, "ap_status", fields, sizeof(fields) / sizeof(fields[0]), status);
 }
 
 static void dump_ap_idcode(uint32_t idcode)
@@ -225,7 +232,7 @@ static void dump_ap_idcode(uint32_t idcode)
     { 7, 4, "variant" },
     { 3, 0, "type" },
   };
-  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), idcode);
+  dump_reg(__func__, "ap_idcode", fields, sizeof(fields) / sizeof(fields[0]), idcode);
 }
 
 static void dump_ap_mem_csw(uint32_t val)
@@ -243,7 +250,7 @@ static void dump_ap_mem_csw(uint32_t val)
     { 3, 3, "res1" },
     { 2, 0, "size" },
   };
-  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg(__func__, "ap_mem_csw", fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void dump_ap_mem_cfg(uint32_t val)
@@ -254,10 +261,10 @@ static void dump_ap_mem_cfg(uint32_t val)
     { 1, 1, "la" },
     { 0, 0, "be" },
   };
-  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg(__func__, "ap_mem_cfg", fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
-static void dump_reg_cpuid(uint32_t val)
+static void dump_reg_cpuid(const char* label, uint32_t val)
 {
   static const struct port_field_desc fields[] = {
     { 31, 24, "implementer" },
@@ -266,10 +273,10 @@ static void dump_reg_cpuid(uint32_t val)
     { 15, 4, "partno" },
     { 3, 0, "revision" },
   };
-  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
-static void dump_reg_dhcsr(uint32_t val)
+static void dump_reg_dhcsr(const char* label, uint32_t val)
 {
   static const struct port_field_desc fields[] = {
     { 31, 26, "reserved0" }, // top part of dbg key for writes
@@ -284,28 +291,57 @@ static void dump_reg_dhcsr(uint32_t val)
     { 1, 1, "c_halt" },
     { 0, 0, "c_debugen" },
   };
-  dump_reg(__func__, fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
+}
+
+static void dump_reg_demcr(const char* label, uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 25, "reserved0" },
+    { 24, 24, "dwtena" },
+    { 23, 11, "reseerved1" },
+    { 10, 10, "vc_harderr" },
+    { 9, 1, "reserved2" },
+    { 0, 0, "vc_corereset" },
+  };
+  dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
+}
+
+static void dump_reg_aircr(const char* label, uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 16, "vectkey" },
+    { 15, 15, "endianess" },
+    { 14, 3, "reserved0" },
+    { 2, 2, "sysresetreq" },
+    { 1, 1, "vectclractive" },
+    { 0, 0, "reserved1" },
+  };
+  dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void hexdump(const char* tag, const uint8_t* bs, size_t nb)
 {
+  assert(strlen(tag) > 0);
   for (int i = 0; i < nb; i += 16) {
-    printf("%s %04x:", tag, i);
+    fprintf(stderr, "%s %04x:", tag, i);
     for (int j = 0; j < 16 && i + j < nb; j++)
-      printf("%02x ", bs[i + j]);
-    printf("\n");
+      fprintf(stderr, "%02x ", bs[i + j]);
+    fprintf(stderr, "\n");
   }
 }
 
-static void default_dumper_mem(uint64_t addr, const uint8_t* bs, size_t nb)
+static void dump_mem(uint64_t addr, const uint8_t* bs, size_t nb)
 {
   char backing[16 + 1];
   const char* label = backing;
-  void (*reg)(uint32_t) = NULL;
+  void (*reg)(const char*, uint32_t) = NULL;
   if (nb == 4) {
     switch (addr) {
-    case 0xe000ed00: label = "cpuid"; reg = dump_reg_cpuid; break;
-    case 0xe000edf0: label = "dhcsr"; reg = dump_reg_dhcsr; break;
+    case REG_CPUID: label = "cpuid"; reg = dump_reg_cpuid; break;
+    case REG_AIRCR: label = "aircr"; reg = dump_reg_aircr; break;
+    case REG_DHCSR: label = "dhcsr"; reg = dump_reg_dhcsr; break;
+    case REG_DEMCR: label = "demcr"; reg = dump_reg_demcr; break;
     default: goto label_addr;
     }
   } else {
@@ -317,7 +353,7 @@ label_addr:
   }
   hexdump(label, bs, nb);
   if (reg)
-    (*reg)(*(uint32_t*)bs);
+    (*reg)(label, *(uint32_t*)bs);
 }
 
 static int swd_status(struct pinctl* c, uint32_t* status)
@@ -361,7 +397,7 @@ static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
   assert(rv == 0);
   if (rv != 0) return rv;
 
-  if (verbose)
+  if (verbose > 1)
     fprintf(stderr, "%s:%d: ap:%02x:%08x\n", __func__, __LINE__, reg, *out);
   return 0;
 }
@@ -385,6 +421,9 @@ static int swd_ap_idcode(struct pinctl* c, int ap, uint32_t* out)
 
 static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs, size_t nb)
 {
+  const uint8_t* const orig_bs = bs;
+  const size_t orig_nb = nb;
+
   uint32_t cfg, csw;
   int err;
 
@@ -458,9 +497,13 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     }
   }
 
+  if (verbose)
+    dump_mem(addr, orig_bs, orig_nb);
+
   return 0;
 }
 
+/* NB: read-modify-write operations for the unaligned bits, if any. */
 static int swd_ap_mem_write(struct pinctl* c, int ap, uint64_t addr, const uint8_t* bs, size_t nb)
 {
   uint32_t cfg, csw;
@@ -474,10 +517,6 @@ static int swd_ap_mem_write(struct pinctl* c, int ap, uint64_t addr, const uint8
   assert(err == 0);
   if (verbose)
     dump_ap_mem_csw(csw);
-
-  /* set 32-bit transfer size and auto-increment on access */
-  err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (1 << 4) | (2 << 0));
-  assert(err == 0);
 
   /* the DWR access always returns 32-bits regardless of the size set
    * in CSW (ie, not a single byte if that's set). align the start/end
@@ -494,6 +533,9 @@ static int swd_ap_mem_write(struct pinctl* c, int ap, uint64_t addr, const uint8
   err = swd_ap_write(c, ap, REG_AP_MEM_TAR_LO, (addr >> 0) & 0xffffffff);
   assert(err == 0);
   if (cfg & 0x02) {
+    err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (2 << 0));
+    assert(err == 0);
+
     err = swd_ap_write(c, ap, REG_AP_MEM_TAR_HI, (addr >> 32) & 0xffffffff);
     assert(err == 0);
   }
@@ -503,37 +545,50 @@ static int swd_ap_mem_write(struct pinctl* c, int ap, uint64_t addr, const uint8
     err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
     switch (slop_head) {
-// case 1: *bs++ = (val >> 8) & 0xff;
-// case 2: *bs++ = (val >> 16) & 0xff;
-// case 3: *bs++ = (val >> 24) & 0xff;
-// break;
+    case 1: val &= ~(0xff << 8); val |= (*bs++ << 8);
+    case 2: val &= ~(0xff << 16); val |= (*bs++ << 16);
+    case 3: val &= ~(0xff << 24); val |= (*bs++ << 24);
+      break;
 
     default:
       assert(0);
     }
+    err = swd_ap_write(c, ap, REG_AP_MEM_DRW, val);
+    assert(err == 0);
   }
 
-  for (int i = 0; i < nb / 4; i++) {
-    err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
+  /* set 32-bit transfer size and auto-increment on access for any
+   * aligned bits.
+   */
+  if (nb / 4) {
+    err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (1 << 4) | (2 << 0));
     assert(err == 0);
-// *bs++ = (val >> 0) & 0xff;
-// *bs++ = (val >> 8) & 0xff;
-// *bs++ = (val >> 16) & 0xff;
-// *bs++ = (val >> 24) & 0xff;
+
+    for (int i = 0; i < nb / 4; i++, bs+=4) {
+      /* local copy to avoid unaligned accesses on the host */
+      memcpy(&val, bs, 4);
+      err = swd_ap_write(c, ap, REG_AP_MEM_DRW, val);
+      assert(err == 0);
+    }
   }
 
   if (slop_tail) {
+    err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (2 << 0));
+    assert(err == 0);
+
     err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
     switch (slop_tail) {
-// case 3: *bs++ = (val >> 8) & 0xff;
-// case 2: *bs++ = (val >> 16) & 0xff;
-// case 1: *bs++ = (val >> 24) & 0xff;
-// break;
+    case 3: val &= ~(0xff << 8); val |= (*bs++ << 8);
+    case 2: val &= ~(0xff << 16); val |= (*bs++ << 16);
+    case 1: val &= ~(0xff << 24); val |= (*bs++ << 24);
+      break;
 
-      default:
-        assert(0);
+    default:
+      assert(0);
     }
+    err = swd_ap_write(c, ap, REG_AP_MEM_DRW, val);
+    assert(err == 0);
   }
 
   return 0;
@@ -541,10 +596,7 @@ static int swd_ap_mem_write(struct pinctl* c, int ap, uint64_t addr, const uint8
 
 static int swd_ap_mem_read_u32(struct pinctl* c, int ap, uint64_t addr, uint32_t* val)
 {
-  int rv = swd_ap_mem_read(c, 0, addr, (uint8_t*)val, sizeof(*val));
-  if (verbose && (rv == 0))
-    default_dumper_mem(addr, (uint8_t*)val, sizeof(*val));
-  return rv;
+  return swd_ap_mem_read(c, 0, addr, (uint8_t*)val, sizeof(*val));
 }
 
 static int swd_ap_mem_write_u32(struct pinctl* c, int ap, uint64_t addr, const char* label, const uint32_t val)
@@ -569,7 +621,7 @@ int main(int argc, char** argv)
       break;
 
     case 'v':
-      verbose = 1;
+      verbose++;
       break;
 
     default:
@@ -607,25 +659,36 @@ int main(int argc, char** argv)
   assert(((val >> 13) & 0x0f) == 0x08);
 
   /* it doesn't matter about the cpuid, but it's informational */
-  opt = swd_ap_mem_read_u32(pins, 0, 0xe000ed00, &val);
+  opt = swd_ap_mem_read_u32(pins, 0, REG_CPUID, &val);
   assert(opt == 0);
 
   /* halt the processor before futzing w/ flash. just for yucks, we do
    * the double read to check if it's still in reset.
    */
-  opt = swd_ap_mem_read_u32(pins, 0, 0xe000edf0, &val);
+  opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
   assert(opt == 0);
   if (val & (1 << 25)) {
-    opt = swd_ap_mem_read_u32(pins, 0, 0xe000edf0, &val);
+    opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
     assert(opt == 0);
     if (val & (1 << 25))
       printf("%s:%d: held in reset\n", __func__, __LINE__);
   }
+  #if 1
   if (!(val & (1 << 17))) {
     val = (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0);
-// opt = swd_ap_mem_write_u32(pins, 0, 0xe000edf0, "dhcsr", val);
-// assert(opt == 0);
+    opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, "dhcsr", val);
+    assert(opt == 0);
+    opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
+    assert(opt == 0);
   }
+  #endif
+  opt = swd_ap_mem_read_u32(pins, 0, REG_AIRCR, &val);
+  assert(opt == 0);
+  opt = swd_ap_mem_read_u32(pins, 0, REG_DEMCR, &val);
+  assert(opt == 0);
+
+  opt = swd_ap_mem_read_u32(pins, 0, REG_FTFL_STAT, &val);
+  assert(opt == 0);
 
   rv = EXIT_SUCCESS;
 err_exit:
