@@ -604,6 +604,107 @@ static int swd_ap_mem_write_u32(struct pinctl* c, int ap, uint64_t addr, const u
   return swd_ap_mem_write(c, 0, addr, (uint8_t*)&val, sizeof(val));
 }
 
+/*  ftfl registers are (oddly) 8-bit, but the swd bits seem happier w/
+ * 32-bit accesses (ie, always returning the word even when the config
+ * is set for 8-bit accesses).
+ *
+ * [0] - command
+ * [1] - addr[23:16]
+ * [2] - addr[15:8]
+ * [3] - addr[7:0]
+ * [4] - param[7:0]
+ * ...
+ * [11] - param[63:54]
+ */
+static int swd_ftfl_status(struct pinctl* c, uint8_t regs[4])
+{
+  int err = swd_ap_mem_read(c, 0, REG_FTFL_STAT, regs, 4);
+  assert(err == 0);
+  assert((regs[0] & (7 << 1)) == 0);
+  /* early out on the 'common' done/no-error case */
+  if ((regs[0] & 0xF0) == (1 << 7))
+    return 0;
+  if (!(regs[0] & (1 << 7)))
+    return EBUSY;
+  if (regs[0] & (1 << 6))
+    return EXDEV;
+  if (regs[0] & (1 << 5))
+    return EFAULT;
+  if (regs[0] & (1 << 4))
+    return EACCES;
+  assert(0);
+}
+
+static int swd_ftfl_issue(struct pinctl* c, uint8_t op, uint32_t addr, uint8_t param[8])
+{
+  /* only 24-bits of address bits and aligned */
+  assert((addr & 0xff000000) == 0);
+
+  int err;
+  uint8_t regs[16];
+  static const uint8_t fccob_map[] = {
+    0x07, 0x06, 0x05, 0x04,
+    0x0b, 0x0a, 0x09, 0x08,
+    0x0f, 0x0e, 0x0d, 0x0c,
+  };
+
+  /* wait for FSWTAT fields ACCERR(0) / FPIOL(0) / CCIF(1). this
+   * assumes that we're the only ones accessing the flash since the
+   * processor should be in the halt state.
+   */
+  for (int i = 0; i < 10; i++) {
+    err = swd_ftfl_status(c, regs);
+
+    /* CCIF only means ready. */
+    if (!err) break;
+    if (verbose)
+      fprintf(stderr, "%s:%d: %d err:%d:%s status:%02x\n", __func__, __LINE__, i, err, strerror(err), regs[0]);
+
+    /* if error, clear the state by writing both teh bits regardless
+     * of which one might be set.
+     */
+    if (regs[0] & ((1 << 5) | (1 << 4))) {
+      regs[0] = ((1 << 5) | (1 << 4));
+      err = swd_ap_mem_write(c, 0, REG_FTFL_STAT, regs, sizeof(regs));
+      assert(err == 0);
+    }
+    /* we may be waiting for an other command to complete */
+usleep(10000);
+  }
+
+  /* we failed to clear the error state or that last command is 'long
+   * running' (erase?) so that ready never got set.
+   */
+  if (err) return err;
+
+  memset(regs + 4, 0, sizeof(regs) - 4);
+  regs[fccob_map[0x00]] = op;
+  regs[fccob_map[0x01]] = (addr >> 16) & 0xff;
+  regs[fccob_map[0x02]] = (addr >> 8) & 0xff;
+  regs[fccob_map[0x03]] = (addr >> 0) & 0xff;
+  regs[fccob_map[0x04]] = param[0];
+  regs[fccob_map[0x08]] = param[1];
+  regs[fccob_map[0x09]] = param[2];
+  regs[fccob_map[0x0a]] = param[3];
+  regs[fccob_map[0x0b]] = param[4];
+
+  err = swd_ap_mem_write(c, 0, REG_FTFL_STAT + 4, regs + 4, sizeof(regs) - 4);
+  assert(err == 0);
+  err = swd_ap_mem_write(c, 0, REG_FTFL_STAT, regs + 0, 4);
+  assert(err == 0);
+
+  err = swd_ftfl_status(c, regs + 0);
+  assert(err == 0);
+if (regs[0] != 0x81) {
+  uint32_t v;
+  memcpy(&v, param + 1, 4);
+  printf("%s:%d: reg:%02x val:%08x\n", __func__, __LINE__, regs[0], v);
+assert(0);
+}
+
+  return err;
+}
+
 int main(int argc, char** argv)
 {
   int rv = EXIT_FAILURE;
@@ -701,10 +802,18 @@ int main(int argc, char** argv)
   opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
   assert(opt == 0);
 
-  /* check on the flash unit, these are 8-bit */
-  uint8_t ftfl[4];
-  opt = swd_ap_mem_read(pins, 0, REG_FTFL_STAT, ftfl, sizeof(ftfl));
+  uint8_t bs[8];
+  for (val = 0x21; val != ~0; val++) {
+if ((val & 0xff) == 0)
+fprintf(stderr, "%s:%d: val:%08x\n", __func__, __LINE__, val);
+
+bs[0] = 0x01;
+// bs[1] = 0x23; bs[2] = 0x45; bs[3] = 0x67; bs[4] = 0x89;
+memcpy(bs + 1, &val, sizeof(val));
+// bs[1] = 0x20; bs[2] = 0x00; bs[3] = 0x00; bs[4] = 0x00;
+  opt = swd_ftfl_issue(pins, 2, 0, bs);
   assert(opt == 0);
+  }
 
   rv = EXIT_SUCCESS;
 err_exit:
