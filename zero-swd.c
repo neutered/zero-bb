@@ -637,7 +637,10 @@ static int swd_ftfl_status(struct pinctl* c, uint8_t regs[4])
 
 static int swd_ftfl_issue(struct pinctl* c, uint8_t op, uint32_t addr, uint8_t param[8])
 {
-  /* only 24-bits of address bits and aligned */
+  /* only 24-bits of address bits and aligned. some commands have
+   * higher alignment restrictions, but this is the least common
+   * denominator.
+   */
   assert((addr & 0xff000000) == 0);
 
   int err;
@@ -647,6 +650,7 @@ static int swd_ftfl_issue(struct pinctl* c, uint8_t op, uint32_t addr, uint8_t p
     0x0b, 0x0a, 0x09, 0x08,
     0x0f, 0x0e, 0x0d, 0x0c,
   };
+  int fccob_read = 0;
 
   /* wait for FSWTAT fields ACCERR(0) / FPIOL(0) / CCIF(1). this
    * assumes that we're the only ones accessing the flash since the
@@ -679,28 +683,154 @@ usleep(10000);
 
   memset(regs + 4, 0, sizeof(regs) - 4);
   regs[fccob_map[0x00]] = op;
-  regs[fccob_map[0x01]] = (addr >> 16) & 0xff;
-  regs[fccob_map[0x02]] = (addr >> 8) & 0xff;
-  regs[fccob_map[0x03]] = (addr >> 0) & 0xff;
-  regs[fccob_map[0x04]] = param[0];
-  regs[fccob_map[0x08]] = param[1];
-  regs[fccob_map[0x09]] = param[2];
-  regs[fccob_map[0x0a]] = param[3];
-  regs[fccob_map[0x0b]] = param[4];
 
+  /* set 'addr' words for ops htat use them */
+  switch (op) {
+  case 0x00:
+  case 0x01:
+  case 0x02:
+  case 0x03:
+  case 0x06:
+  case 0x08:
+  case 0x09:
+  case 0x0b:
+  case 0x46:
+    regs[fccob_map[0x01]] = (addr >> 16) & 0xff;
+    regs[fccob_map[0x02]] = (addr >> 8) & 0xff;
+    regs[fccob_map[0x03]] = (addr >> 0) & 0xff;
+    break;
+
+  default:
+    fprintf(stderr, "%s:%d: unknown ftfl op:%02x\n", __func__, __LINE__, op);
+    assert(0);
+  case 0x40:
+  case 0x41:
+  case 0x43:
+  case 0x44:
+  case 0x45:
+  case 0x80:
+  case 0x81:
+    break;
+  }
+
+  /* fill in the rest of the args */
+  switch (op) {
+  case 0x00:
+    regs[fccob_map[0x04]] = param[0]; /* margin */
+    break;
+  case 0x01:
+    regs[fccob_map[0x04]] = param[0]; /* num[15:8] */
+    regs[fccob_map[0x05]] = param[1]; /* num[7:0] */
+    regs[fccob_map[0x06]] = param[2]; /* margin */
+    break;
+  case 0x02:
+    regs[fccob_map[0x04]] = param[0]; /* margin */
+    regs[fccob_map[0x08]] = param[1]; /* expected[0] */
+    regs[fccob_map[0x09]] = param[2]; /* expected[1] */
+    regs[fccob_map[0x0a]] = param[3]; /* expected[2] */
+    regs[fccob_map[0x0b]] = param[4]; /* expected[3] */
+    fccob_read = 1;
+    break;
+  case 0x41:
+    regs[fccob_map[0x01]] = param[0]; /* record index */
+  case 0x03:
+    regs[fccob_map[0x08]] = param[0]; /* resource selector */
+    fccob_read = 1;
+    break;
+  case 0x06:
+    regs[fccob_map[0x04]] = param[0]; /* data[0] */
+    regs[fccob_map[0x05]] = param[1]; /* data[1] */
+    regs[fccob_map[0x06]] = param[2]; /* data[2] */
+    regs[fccob_map[0x07]] = param[3]; /* data[3] */
+    break;
+  case 0x43:
+    regs[fccob_map[0x01]] = param[0]; /* record index */
+    regs[fccob_map[0x04]] = param[1]; /* data[0] */
+    regs[fccob_map[0x05]] = param[2]; /* data[1] */
+    regs[fccob_map[0x06]] = param[3]; /* data[2] */
+    regs[fccob_map[0x07]] = param[4]; /* data[3] */
+    break;
+  case 0x0b:
+    regs[fccob_map[0x04]] = param[0]; /* n[15:8] */
+    regs[fccob_map[0x05]] = param[1]; /* n[7:0] */
+    break;
+  case 0x46:
+    regs[fccob_map[0x04]] = param[0]; /* swap control code */
+    fccob_read = 1;
+    break;
+  case 0x40:
+    regs[fccob_map[0x01]] = param[0]; /* margin */
+    break;
+  case 0x08:
+  case 0x09:
+  case 0x44:
+    break;
+  case 0x45:
+    regs[fccob_map[0x04]] = param[0]; /* data[0] */
+    regs[fccob_map[0x05]] = param[1]; /* data[1] */
+    regs[fccob_map[0x06]] = param[2]; /* data[2] */
+    regs[fccob_map[0x07]] = param[3]; /* data[3] */
+    regs[fccob_map[0x08]] = param[4]; /* data[4] */
+    regs[fccob_map[0x09]] = param[5]; /* data[5] */
+    regs[fccob_map[0x0a]] = param[6]; /* data[6] */
+    regs[fccob_map[0x0b]] = param[7]; /* data[7] */
+  case 0x80:
+    regs[fccob_map[0x04]] = param[0]; /* eeprom size code */
+    regs[fccob_map[0x05]] = param[1]; /* partition code */
+    break;
+  case 0x81:
+    regs[fccob_map[0x01]] = param[0]; /* function control code */
+    break;
+  }
+
+  /* params and then issue by writing FSTAT[CCIF] */
   err = swd_ap_mem_write(c, 0, REG_FTFL_STAT + 4, regs + 4, sizeof(regs) - 4);
   assert(err == 0);
   err = swd_ap_mem_write(c, 0, REG_FTFL_STAT, regs + 0, 4);
   assert(err == 0);
 
+  /* FixMe: do we need/want to wait for loner running commands?
+   * currently, things that return results are fast enough
+   * that the flash Txxx is taken up w/ the swd transactions.
+   * that might not hold for 'erase all'.
+   */
   err = swd_ftfl_status(c, regs + 0);
   assert(err == 0);
-if (regs[0] != 0x81) {
-  uint32_t v;
-  memcpy(&v, param + 1, 4);
-  printf("%s:%d: reg:%02x val:%08x\n", __func__, __LINE__, regs[0], v);
-assert(0);
-}
+  if ((err == 0) && fccob_read) {
+    switch (op) {
+    case 0x03:
+    case 0x41:
+    case 0x46:
+      err = swd_ap_mem_read(c, 0, REG_FTFL_STAT + 4, regs + 4, sizeof(regs) - 4);
+      assert(err == 0);
+      break;
+    default:
+      assert(0);
+    case 0x02:
+      /* we get the state already in the status register */
+      break;
+    }
+
+    switch (op) {
+    case 0x02:
+      param[0] = regs[0] & 0x01;
+      break;
+    case 0x03:
+    case 0x41:
+      param[0] = regs[fccob_map[0x04]]; /* data[31:24] */
+      param[1] = regs[fccob_map[0x05]]; /* data[23:16] */
+      param[2] = regs[fccob_map[0x06]]; /* data[15:8] */
+      param[3] = regs[fccob_map[0x07]]; /* data[7:0] */
+      break;
+    case 0x46:
+      param[0] = regs[fccob_map[0x05]]; /* swap state */
+      param[1] = regs[fccob_map[0x06]]; /* swap config */
+      break;
+    default:
+      assert(0);
+      break;
+    }
+  }
 
   return err;
 }
@@ -802,10 +932,10 @@ int main(int argc, char** argv)
   opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
   assert(opt == 0);
 
-  uint8_t bs[8];
-  for (val = 0x21; val != ~0; val++) {
+  uint8_t bs[16];
+  for (val = 0x00; val != ~0; val++) {
 if ((val & 0xff) == 0)
-fprintf(stderr, "%s:%d: val:%08x\n", __func__, __LINE__, val);
+fprintf(stderr, "%s:%d: testing val:%08x\n", __func__, __LINE__, val);
 
 bs[0] = 0x01;
 // bs[1] = 0x23; bs[2] = 0x45; bs[3] = 0x67; bs[4] = 0x89;
@@ -813,6 +943,28 @@ memcpy(bs + 1, &val, sizeof(val));
 // bs[1] = 0x20; bs[2] = 0x00; bs[3] = 0x00; bs[4] = 0x00;
   opt = swd_ftfl_issue(pins, 2, 0, bs);
   assert(opt == 0);
+// fprintf(stderr, "%s:%d: stat:%02x\n", __func__, __LINE__, bs[0]);
+if (!bs[0]) { fprintf(stderr, "%s:%d: val:%08x\n", __func__, __LINE__, val); break; }
+  }
+  for (int i = 0x00; i < 0x10; i++) {
+bs[0] = i;
+  opt = swd_ftfl_issue(pins, 0x41, 0, bs);
+  assert(opt == 0);
+  memcpy(&val, bs, 4);
+  memset(bs, 0, sizeof(bs));
+  fprintf(stderr, "%s:%d: once i:%x val:%08x\n", __func__, __LINE__, i, val);
+  }
+
+static const unsigned nb_res[] = { 0x100, 0x10 };
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < nb_res[i]; j += 4) {
+      memset(bs, 0, sizeof(bs));
+      bs[0] = i;
+  opt = swd_ftfl_issue(pins, 3, j, bs);
+  assert(opt == 0);
+  memcpy(&val, bs, 4);
+  fprintf(stderr, "%s:%d: sel:%d addr:%02x val:%08x\n", __func__, __LINE__, i, j, val);
+    }
   }
 
   rv = EXIT_SUCCESS;
