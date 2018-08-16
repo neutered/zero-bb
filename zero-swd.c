@@ -3,7 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <fcntl.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 #include "libpin.h"
 
@@ -840,17 +844,39 @@ int main(int argc, char** argv)
   int rv = EXIT_FAILURE;
   unsigned clock = 1000;
   int opt;
+  uint64_t mem_addr;
+  uint32_t mem_nb = 0;
+  int fd_out = -1;
 
-  while ((opt = getopt(argc, argv, "c:v")) != -1) {
+  while ((opt = getopt(argc, argv, "c:o:r::v")) != -1) {
+    char* end;
+
     switch (opt) {
     case 'c':
-      {
-        char* end;
-        clock = strtoul(optarg, &end, 0);
+      clock = strtoul(optarg, &end, 0);
+      assert(end != optarg);
+      break;
+    case 'o':
+      fd_out = open(optarg, O_WRONLY | O_CREAT | O_TRUNC);
+      if (fd_out == -1)
+        fprintf(stderr, "%s:%d: output(%s) failed:%d:%s\n", __func__, __LINE__, optarg, errno, strerror(errno));
+      assert(fd_out != -1);
+      break;
+    case 'r':
+      if (optarg == NULL) {
+        mem_addr = 0;
+        mem_nb = 0x1000;
+      } else {
+        mem_addr = strtoull(optarg, &end, 0);
         assert(end != optarg);
+        assert((mem_addr & 0x03) == 0);
+        if (*end == '\0') break;
+        optarg = end + 1;
+        mem_nb = strtoul(optarg, &end, 0);
+        assert(end != optarg);
+        assert((mem_nb & 0x03) == 0);
       }
       break;
-
     case 'v':
       verbose++;
       break;
@@ -932,39 +958,31 @@ int main(int argc, char** argv)
   opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
   assert(opt == 0);
 
-  uint8_t bs[16];
-  for (val = 0x00; val != ~0; val++) {
-if ((val & 0xff) == 0)
-fprintf(stderr, "%s:%d: testing val:%08x\n", __func__, __LINE__, val);
-
-bs[0] = 0x01;
-// bs[1] = 0x23; bs[2] = 0x45; bs[3] = 0x67; bs[4] = 0x89;
-memcpy(bs + 1, &val, sizeof(val));
-// bs[1] = 0x20; bs[2] = 0x00; bs[3] = 0x00; bs[4] = 0x00;
-  opt = swd_ftfl_issue(pins, 2, 0, bs);
-  assert(opt == 0);
-// fprintf(stderr, "%s:%d: stat:%02x\n", __func__, __LINE__, bs[0]);
-if (!bs[0]) { fprintf(stderr, "%s:%d: val:%08x\n", __func__, __LINE__, val); break; }
+  uint8_t bs[256];
+  while (mem_nb > 0) {
+#define min(a, b) ((a) < (b) ? (a) : (b))
+    uint32_t nb = min(mem_nb, sizeof(bs));
+    opt = swd_ap_mem_read(pins, 0, mem_addr, bs, nb);
+    assert(opt == 0);
+    if (fd_out == -1)
+      hexdump("mem", bs, sizeof(bs));
+    else
+      write(fd_out, bs, nb);
+    mem_addr += nb;
+    mem_nb -= nb;
   }
-  for (int i = 0x00; i < 0x10; i++) {
-bs[0] = i;
-  opt = swd_ftfl_issue(pins, 0x41, 0, bs);
-  assert(opt == 0);
-  memcpy(&val, bs, 4);
-  memset(bs, 0, sizeof(bs));
-  fprintf(stderr, "%s:%d: once i:%x val:%08x\n", __func__, __LINE__, i, val);
-  }
+  if (fd_out != -1) close(fd_out);
 
-static const unsigned nb_res[] = { 0x100, 0x10 };
-  for (int i = 0; i < 2; i++) {
-    for (int j = 0; j < nb_res[i]; j += 4) {
-      memset(bs, 0, sizeof(bs));
-      bs[0] = i;
-  opt = swd_ftfl_issue(pins, 3, j, bs);
-  assert(opt == 0);
-  memcpy(&val, bs, 4);
-  fprintf(stderr, "%s:%d: sel:%d addr:%02x val:%08x\n", __func__, __LINE__, i, j, val);
-    }
+  for (val = 0; /**/; val++) {
+    if ((val & 0xff) == 0) fprintf(stderr, "%s:%d: test val:%08x\n", __func__, __LINE__, val);
+  bs[0] = 0x01;
+  memcpy(bs + 1, &val, sizeof(val));
+  opt = swd_ftfl_issue(pins, 0x02, 0, bs);
+assert(opt == 0);
+if (!bs[0]) {
+  fprintf(stderr, "%s:%d: val:%08x\n", __func__, __LINE__, val);
+  break;
+}
   }
 
   rv = EXIT_SUCCESS;
