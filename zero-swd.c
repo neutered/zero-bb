@@ -871,6 +871,7 @@ int main(int argc, char** argv)
         assert(end != optarg);
         assert((mem_addr & 0x03) == 0);
         if (*end == '\0') break;
+        assert(*end == ':');
         optarg = end + 1;
         mem_nb = strtoul(optarg, &end, 0);
         assert(end != optarg);
@@ -918,6 +919,7 @@ int main(int argc, char** argv)
   /* it doesn't matter about the cpuid, but it's informational */
   opt = swd_ap_mem_read_u32(pins, 0, REG_CPUID, &val);
   assert(opt == 0);
+  printf("%s:%d: cpuid:%08x\n", __func__, __LINE__, val);
 
   /* halt the processor before futzing w/ flash. just for yucks, we do
    * the double read to check if it's still in reset.
@@ -972,18 +974,6 @@ int main(int argc, char** argv)
     mem_nb -= nb;
   }
   if (fd_out != -1) close(fd_out);
-
-  for (val = 0; /**/; val++) {
-    if ((val & 0xff) == 0) fprintf(stderr, "%s:%d: test val:%08x\n", __func__, __LINE__, val);
-  bs[0] = 0x01;
-  memcpy(bs + 1, &val, sizeof(val));
-  opt = swd_ftfl_issue(pins, 0x02, 0, bs);
-assert(opt == 0);
-if (!bs[0]) {
-  fprintf(stderr, "%s:%d: val:%08x\n", __func__, __LINE__, val);
-  break;
-}
-  }
 
   rv = EXIT_SUCCESS;
 err_exit:
