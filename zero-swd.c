@@ -848,7 +848,7 @@ int main(int argc, char** argv)
   uint32_t mem_nb = 0;
   int fd_out = -1;
 
-  while ((opt = getopt(argc, argv, "c:o:r::v")) != -1) {
+  while ((opt = getopt(argc, argv, "c:o:r:v")) != -1) {
     char* end;
 
     switch (opt) {
@@ -863,20 +863,18 @@ int main(int argc, char** argv)
       assert(fd_out != -1);
       break;
     case 'r':
-      if (optarg == NULL) {
-        mem_addr = 0;
-        mem_nb = 0x1000;
-      } else {
-        mem_addr = strtoull(optarg, &end, 0);
-        assert(end != optarg);
-        assert((mem_addr & 0x03) == 0);
-        if (*end == '\0') break;
-        assert(*end == ':');
-        optarg = end + 1;
-        mem_nb = strtoul(optarg, &end, 0);
-        assert(end != optarg);
-        assert((mem_nb & 0x03) == 0);
+      mem_addr = strtoull(optarg, &end, 0);
+      assert(end != optarg);
+      assert((mem_addr & 0x03) == 0);
+      if (*end == '\0') {
+        mem_nb = 0x100;
+        break;
       }
+      assert(*end == ':');
+      optarg = end + 1;
+      mem_nb = strtoul(optarg, &end, 0);
+      assert(end != optarg);
+      assert((mem_nb & 0x03) == 0);
       break;
     case 'v':
       verbose++;
@@ -967,7 +965,7 @@ int main(int argc, char** argv)
     opt = swd_ap_mem_read(pins, 0, mem_addr, bs, nb);
     assert(opt == 0);
     if (fd_out == -1)
-      hexdump("mem", bs, sizeof(bs));
+      hexdump("mem", bs, nb);
     else
       write(fd_out, bs, nb);
     mem_addr += nb;
