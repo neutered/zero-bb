@@ -902,12 +902,16 @@ int main(int argc, char** argv)
   printf("%s:%d: idcode:%08x\n", __func__, __LINE__, val);
 
   /* set power state */
-  opt = swd_write(pins, 0, REG_DP_STATUS, CSYSPWRUPREQ | CDBGPWRUPREQ | CDBGRSTREQ);
-  assert(opt == 0);
-  do {
+  for (int i = 0; /**/; i++) {
     opt = swd_status(pins, &val);
     assert(opt == 0);
-  } while ((val & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) != (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK));
+    if ((val & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) == (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK))
+      break;
+    if (i == 0) {
+      opt = swd_write(pins, 0, REG_DP_STATUS, CSYSPWRUPREQ | CDBGPWRUPREQ | CDBGRSTREQ);
+      assert(opt == 0);
+    }
+  }
 
   /* it should be a memory access class */
   opt = swd_ap_idcode(pins, 0, &val);
