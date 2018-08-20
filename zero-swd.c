@@ -842,25 +842,26 @@ usleep(10000);
 int main(int argc, char** argv)
 {
   int rv = EXIT_FAILURE;
-  unsigned clock = 1000;
+  unsigned phase = 1000;
   int opt;
   uint64_t mem_addr;
   uint32_t mem_nb = 0;
   int fd_out = -1;
+  int fd_verify = -1;
 
-  while ((opt = getopt(argc, argv, "c:o:r:v")) != -1) {
+  while ((opt = getopt(argc, argv, "c:o:p:r:v")) != -1) {
     char* end;
 
     switch (opt) {
-    case 'c':
-      clock = strtoul(optarg, &end, 0);
-      assert(end != optarg);
-      break;
     case 'o':
       fd_out = open(optarg, O_WRONLY | O_CREAT | O_TRUNC, 0666);
       if (fd_out == -1)
         fprintf(stderr, "%s:%d: output(%s) failed:%d:%s\n", __func__, __LINE__, optarg, errno, strerror(errno));
       assert(fd_out != -1);
+      break;
+    case 'p':
+      phase = strtoul(optarg, &end, 0);
+      assert(end != optarg);
       break;
     case 'r':
       mem_addr = strtoull(optarg, &end, 0);
@@ -891,7 +892,7 @@ int main(int argc, char** argv)
     }
   }
 
-  struct pinctl* pins = pins_open(clock);
+  struct pinctl* pins = pins_open(phase);
   if (!pins) goto err_exit;
 
   /* reset-y bits for the debug port */

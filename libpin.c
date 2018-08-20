@@ -95,16 +95,16 @@ usleep(1000);
 usleep(1000);
 }
 
-struct pinctl* pins_open(unsigned clock)
+struct pinctl* pins_open(unsigned phase)
 {
   /* make sure the clock rate is representable w/ usleep(3) since i'm
    * lazy and linux isn't quite rtos-y.
    */
-  unsigned phase = 1000000 / (2 * clock);
-  if (phase < 10) {
-    fprintf(stderr, "%s:%d: clock:%u not representable\n", __func__, __LINE__, clock);
+  if (1000000 / phase < 10) {
+    fprintf(stderr, "%s:%d: phase:%u not representable\n", __func__, __LINE__, phase);
     return NULL;
   }
+  phase = 1000000 / phase;
   printf("%s:%d: clock phase:time %uus\n", __func__, __LINE__, phase);
 
   struct pinctl* rv = malloc(sizeof(*rv));
