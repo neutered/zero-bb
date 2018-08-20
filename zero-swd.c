@@ -857,7 +857,7 @@ int main(int argc, char** argv)
       assert(end != optarg);
       break;
     case 'o':
-      fd_out = open(optarg, O_WRONLY | O_CREAT | O_TRUNC);
+      fd_out = open(optarg, O_WRONLY | O_CREAT | O_TRUNC, 0666);
       if (fd_out == -1)
         fprintf(stderr, "%s:%d: output(%s) failed:%d:%s\n", __func__, __LINE__, optarg, errno, strerror(errno));
       assert(fd_out != -1);
@@ -874,6 +874,12 @@ int main(int argc, char** argv)
       optarg = end + 1;
       mem_nb = strtoul(optarg, &end, 0);
       assert(end != optarg);
+      if (strcmp("k", end) == 0)
+        mem_nb *= 1024;
+      else if (strcmp("M", end) == 0)
+        mem_nb *= (1024 * 1024);
+      else
+        assert(*end == 0);
       assert((mem_nb & 0x03) == 0);
       break;
     case 'v':
@@ -970,12 +976,19 @@ int main(int argc, char** argv)
     assert(opt == 0);
     if (fd_out == -1)
       hexdump("mem", bs, nb);
-    else
+    else {
+      fputc('.', stdout);
       write(fd_out, bs, nb);
+    }
     mem_addr += nb;
     mem_nb -= nb;
   }
-  if (fd_out != -1) close(fd_out);
+  if (fd_out != -1) {
+    fputc('\n', stdout);
+    fflush(stdout);
+
+    close(fd_out);
+  }
 
   rv = EXIT_SUCCESS;
 err_exit:
