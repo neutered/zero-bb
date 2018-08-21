@@ -729,10 +729,23 @@ usleep(10000);
     break;
   case 0x02:
     regs[fccob_map[0x04]] = param[0]; /* margin */
-    regs[fccob_map[0x08]] = param[1]; /* expected[0] */
-    regs[fccob_map[0x09]] = param[2]; /* expected[1] */
-    regs[fccob_map[0x0a]] = param[3]; /* expected[2] */
-    regs[fccob_map[0x0b]] = param[4]; /* expected[3] */
+    /* FixMe: the docs say that this is 0123 but the first two entries
+     * for the interrupt vector table is the stack pointer for _start
+     * and then _start.  checking these entries in memory gives
+     * something like:
+     *  0000: 00 00 00 20 85 0c 00 00 ...
+     * where the code at 0x0c84 starts w/ the usual function prolog
+     * (and 0x20 would be a weird stack pointer because it is in the
+     * interrupt vector space).
+     */
+#if 0
+    memcpy(regs + fccob_map[0x08], param + 1, 4);
+#else
+    regs[fccob_map[0x08]] = param[4]; /* expected[0] */
+    regs[fccob_map[0x09]] = param[3]; /* expected[1] */
+    regs[fccob_map[0x0a]] = param[2]; /* expected[2] */
+    regs[fccob_map[0x0b]] = param[1]; /* expected[3] */
+#endif
     fccob_read = 1;
     break;
   case 0x41:
@@ -853,6 +866,10 @@ int main(int argc, char** argv)
     char* end;
 
     switch (opt) {
+    case 'c':
+      fd_verify = open(optarg, O_RDONLY);
+      assert(fd_verify != -1);
+      break;
     case 'o':
       fd_out = open(optarg, O_WRONLY | O_CREAT | O_TRUNC, 0666);
       if (fd_out == -1)
@@ -862,6 +879,12 @@ int main(int argc, char** argv)
     case 'p':
       phase = strtoul(optarg, &end, 0);
       assert(end != optarg);
+      if (strcmp("ms", end) == 0)
+        phase *= 1000;
+      else if (strcmp("s", end) == 0)
+        phase *= 1000000;
+      else
+        assert((*end == '\0') || (strcmp("us", end) == 0));
       break;
     case 'r':
       mem_addr = strtoull(optarg, &end, 0);
@@ -960,16 +983,18 @@ int main(int argc, char** argv)
   /* set to hold after reset and hit the reset */
   opt = swd_ap_mem_read_u32(pins, 0, REG_DEMCR, &val);
   assert(opt == 0);
+fprintf(stderr, "%s:%d: demcr:%08x\n", __func__, __LINE__, val);
   opt = swd_ap_mem_write_u32(pins, 0, REG_DEMCR, val | (1 << 0));
   assert(opt == 0);
   opt = swd_ap_mem_read_u32(pins, 0, REG_AIRCR, &val);
   assert(opt == 0);
+fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
   opt = swd_ap_mem_write_u32(pins, 0, REG_AIRCR, val | (1 << 2));
   assert(opt == 0);
   opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
   assert(opt == 0);
-
-  uint8_t bs[256];
+fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+int8_t bs[256];
   while (mem_nb > 0) {
 #define min(a, b) ((a) < (b) ? (a) : (b))
     uint32_t nb = min(mem_nb, sizeof(bs));
@@ -978,7 +1003,7 @@ int main(int argc, char** argv)
     if (fd_out == -1)
       hexdump("mem", bs, nb);
     else {
-      fputc('.', stdout);
+      fputc('r', stdout);
       write(fd_out, bs, nb);
     }
     mem_addr += nb;
@@ -989,6 +1014,33 @@ int main(int argc, char** argv)
     fflush(stdout);
 
     close(fd_out);
+  }
+
+  if (fd_verify != -1) {
+    struct stat buf;
+    uint8_t params[8];
+
+    opt = fstat(fd_verify, &buf);
+    assert(opt != -1);
+    printf("%s:%d: verify:%zu\n", __func__, __LINE__, (size_t)buf.st_size);
+    for (uint32_t i = 0; i < buf.st_size; /**/) {
+      fputc('c', stdout);
+      size_t n = min(sizeof(bs), buf.st_size);
+      assert((n & 3) == 0);
+      ssize_t n_read = read(fd_verify, bs, n);
+      assert(n_read == n);
+      for (int j = 0; j < n; j += 4, i += 4) {
+        params[0] = 0x01;
+        memcpy(params + 1, bs + i, 4);
+        opt = swd_ftfl_issue(pins, 0x02, i, params);
+        assert(opt == 0);
+        if (params[0])
+          fprintf(stderr, " %04x:%02x:%02x:%02x:%02x ", i, bs[i+0], bs[i+1], bs[i+2], bs[i+3]);
+      }
+      fputc('\n', stdout);
+      fflush(stdout);
+    }
+    close(fd_verify);
   }
 
   rv = EXIT_SUCCESS;
