@@ -11,6 +11,9 @@
 
 #include "libpin.h"
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#define max(a, b) ((a) > (b) ? (a) : (b))
+
 #define REG_DP_IDCODE 0x00
 #define REG_DP_STATUS 0x04
 #define REG_DP_SELECT 0x08
@@ -852,6 +855,93 @@ usleep(10000);
   return err;
 }
 
+static int ftfl_flash_verify(struct pinctl* c, const char* path)
+{
+  int rv = 0;
+  int fd = open(path, O_RDONLY);
+  if (fd == -1) {
+    fprintf(stderr, "%s:%d: open(%s) : %d:%s\n", __func__, __LINE__, path, errno, strerror(errno));
+    rv = errno;
+    goto err_exit;
+  }
+
+  struct stat buf;
+  int err = fstat(fd, &buf);
+  if (err == -1) {
+    fprintf(stderr, "%s:%d: stat(%s) : %d:%s\n", __func__, __LINE__, path, errno, strerror(errno));
+    rv = errno;
+    goto err_exit;
+  }
+  printf("%s:%d: verify:%s nb:%zu\n", __func__, __LINE__, path, (size_t)buf.st_size);
+
+  uint8_t bs[256];
+  uint8_t params[8];
+  for (uint32_t i = 0; i < buf.st_size; /**/) {
+    fputc('c', stdout);
+    size_t n = min(sizeof(bs), buf.st_size);
+    assert((n & 3) == 0);
+    ssize_t n_read = read(fd, bs, n);
+    assert(n_read == n);
+
+    for (int j = 0; j < n; j += 4, i += 4) {
+      params[0] = 0x01;
+      memcpy(params + 1, bs + i, 4);
+      rv = swd_ftfl_issue(c, 0x02, i, params);
+      if (rv) {
+        fprintf(stderr, "%s:%d: ftfl:%d:%s\n", __func__, __LINE__, rv, strerror(rv));
+        goto err_exit;
+      }
+      if (params[0])
+        printf(" %04x:%02x:%02x:%02x:%02x ", i, bs[i+0], bs[i+1], bs[i+2], bs[i+3]);
+    }
+    fputc('\n', stdout);
+    fflush(stdout);
+  }
+
+err_exit:
+  if (fd != -1) close(fd);
+  return rv;
+}
+
+static int ftfl_mem_read(struct pinctl* c, uint64_t addr, size_t nb, const char* path)
+{
+  int rv = 0;
+  int fd  = -1;
+
+  if (path) {
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd == -1) {
+      fprintf(stderr, "%s:%d: output(%s) failed:%d:%s\n", __func__, __LINE__, path, errno, strerror(errno));
+      rv = errno;
+      goto err_exit;
+    }
+  }
+
+  uint8_t bs[256];
+  while (nb > 0) {
+    uint32_t n = min(nb, sizeof(bs));
+    rv = swd_ap_mem_read(c, 0, addr, bs, n);
+    if (rv) goto err_exit;
+    if (fd == -1) {
+      hexdump("mem", bs, n);
+    } else {
+      fputc('r', stdout);
+      write(fd, bs, n);
+    }
+    addr += n;
+    nb -= n;
+  }
+
+err_exit:
+  if (fd != -1) {
+    fputc('\n', stdout);
+    fflush(stdout);
+
+    close(fd);
+  }
+  return rv;
+}
+
 int main(int argc, char** argv)
 {
   int rv = EXIT_FAILURE;
@@ -859,22 +949,18 @@ int main(int argc, char** argv)
   int opt;
   uint64_t mem_addr;
   uint32_t mem_nb = 0;
-  int fd_out = -1;
-  int fd_verify = -1;
+  const char* f_out = NULL;
+  const char* f_verify = NULL;
 
   while ((opt = getopt(argc, argv, "c:o:p:r:v")) != -1) {
     char* end;
 
     switch (opt) {
     case 'c':
-      fd_verify = open(optarg, O_RDONLY);
-      assert(fd_verify != -1);
+      f_verify = optarg;
       break;
     case 'o':
-      fd_out = open(optarg, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-      if (fd_out == -1)
-        fprintf(stderr, "%s:%d: output(%s) failed:%d:%s\n", __func__, __LINE__, optarg, errno, strerror(errno));
-      assert(fd_out != -1);
+      f_out = optarg;
       break;
     case 'p':
       phase = strtoul(optarg, &end, 0);
@@ -994,54 +1080,11 @@ fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
   opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
   assert(opt == 0);
 fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
-int8_t bs[256];
-  while (mem_nb > 0) {
-#define min(a, b) ((a) < (b) ? (a) : (b))
-    uint32_t nb = min(mem_nb, sizeof(bs));
-    opt = swd_ap_mem_read(pins, 0, mem_addr, bs, nb);
-    assert(opt == 0);
-    if (fd_out == -1)
-      hexdump("mem", bs, nb);
-    else {
-      fputc('r', stdout);
-      write(fd_out, bs, nb);
-    }
-    mem_addr += nb;
-    mem_nb -= nb;
-  }
-  if (fd_out != -1) {
-    fputc('\n', stdout);
-    fflush(stdout);
 
-    close(fd_out);
-  }
-
-  if (fd_verify != -1) {
-    struct stat buf;
-    uint8_t params[8];
-
-    opt = fstat(fd_verify, &buf);
-    assert(opt != -1);
-    printf("%s:%d: verify:%zu\n", __func__, __LINE__, (size_t)buf.st_size);
-    for (uint32_t i = 0; i < buf.st_size; /**/) {
-      fputc('c', stdout);
-      size_t n = min(sizeof(bs), buf.st_size);
-      assert((n & 3) == 0);
-      ssize_t n_read = read(fd_verify, bs, n);
-      assert(n_read == n);
-      for (int j = 0; j < n; j += 4, i += 4) {
-        params[0] = 0x01;
-        memcpy(params + 1, bs + i, 4);
-        opt = swd_ftfl_issue(pins, 0x02, i, params);
-        assert(opt == 0);
-        if (params[0])
-          fprintf(stderr, " %04x:%02x:%02x:%02x:%02x ", i, bs[i+0], bs[i+1], bs[i+2], bs[i+3]);
-      }
-      fputc('\n', stdout);
-      fflush(stdout);
-    }
-    close(fd_verify);
-  }
+  if (mem_nb > 0)
+    ftfl_mem_read(pins, mem_addr, mem_nb, f_out);
+  if (f_verify != NULL)
+    ftfl_flash_verify(pins, f_verify);
 
   rv = EXIT_SUCCESS;
 err_exit:
