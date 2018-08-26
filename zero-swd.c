@@ -23,7 +23,10 @@
 
 #define REG_CPUID 0xe000ed00
 #define REG_AIRCR 0xe000ed0c
+#define REG_DSFR  0xe000ed30
 #define REG_DHCSR 0xe000edf0
+#define REG_DCRSR 0xe000edf4
+#define REG_DCRDR 0xe000edf8
 #define REG_DEMCR 0xe000edfc
 
 #define REG_FTFL_STAT 0x40020000
@@ -55,6 +58,9 @@
 #define ORUNDETECT (1 << 0)
 
 static int verbose;
+
+/* if dump | verbose parse status register bits */
+static int swd_status(struct pinctl* c, uint32_t* status, int dump);
 
 static void resync(struct pinctl* pins, int idle)
 {
@@ -96,17 +102,17 @@ static uint8_t opcode(int ap, int reg, int rw)
  *  [1] - xxx
  *  [2] - yyy
  */
-static int send_op(struct pinctl* pins, int ap, int reg, int rw)
+static int send_op(struct pinctl* c, int ap, int reg, int rw)
 {
   uint8_t op = opcode(ap, reg, rw);
   if (verbose > 1)
     fprintf(stderr, "%s:%d: ap:%d reg:%02x rw:%d op:%02x\n", __func__, __LINE__, ap, reg, rw, op);
 
   for (int i = 0; i < 4; i++) {
-    pins_write(pins, &op, 8);
+    pins_write(c, &op, 8);
 
     uint8_t status;
-    pins_read(pins, &status, 3);
+    pins_read(c, &status, 3);
     if (verbose > 2)
       fprintf(stderr, "%s:%d: try:%d status:%02x\n", __func__, __LINE__, i, status);
     switch (status) {
@@ -128,14 +134,14 @@ static int send_op(struct pinctl* pins, int ap, int reg, int rw)
   return EAGAIN;
 }
 
-static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
+static int internal_swd_read(struct pinctl* c, int ap, int reg, uint32_t* val)
 {
-  int rv = send_op(pins, ap, reg, 1);
+  int rv = send_op(c, ap, reg, 1);
   if (rv != 0) return rv;
 
   /* 32-bit data + parity */
   uint8_t bs[4 + 1];
-  pins_read(pins, bs, 33);
+  pins_read(c, bs, 33);
   int i, n;
   for (i = n = 0; i < 4; i++)
     n += __builtin_popcount(bs[i]);
@@ -153,7 +159,7 @@ static int swd_read(struct pinctl* pins, int ap, int reg, uint32_t* val)
   return 0;
 }
 
-static int swd_write(struct pinctl* pins, int ap, int reg, uint32_t val)
+static int internal_swd_write(struct pinctl* pins, int ap, int reg, uint32_t val)
 {
   int rv = send_op(pins, ap, reg, 0);
   if (rv != 0) return rv;
@@ -168,6 +174,62 @@ static int swd_write(struct pinctl* pins, int ap, int reg, uint32_t val)
   pins_write(pins, bs, 33);
 
   return 0;
+}
+
+static int swd_handle_fail(struct pinctl* c)
+{
+  uint32_t val;
+  int rv = swd_status(c, &val, 1);
+  assert(rv == 0);
+fprintf(stderr, "%s:%d: status:%08x\n", __func__, __LINE__, val);
+  /* sticky errors? */
+  uint32_t reg = 0x01;
+  assert((val & 0x32) != 0);
+  if (val & 0x20) reg |= (1 << 2);
+  if (val & 0x10) reg |= (1 << 1);
+  rv = internal_swd_write(c, 0, 0, reg);
+  assert(rv == 0);
+  return rv;
+}
+
+static int swd_read(struct pinctl* c, int ap, int reg, uint32_t* val)
+{
+  int retry = 0;
+  int rv;
+retry:
+  rv = internal_swd_read(c, ap, reg, val);
+  switch (rv) {
+  case EFAULT:
+    fprintf(stderr, "%s:%d: %d:%02x fault retry:%d\n", __func__, __LINE__, ap, reg, retry);
+    if (retry) return rv;
+    retry = 1;
+    rv = swd_handle_fail(c);
+    assert(rv == 0);
+    goto retry;
+
+  default:
+    return rv;
+  }
+}
+
+static int swd_write(struct pinctl* c, int ap, int reg, uint32_t val)
+{
+  int retry = 0;
+  int rv;
+retry:
+  rv = internal_swd_write(c, ap, reg, val);
+  switch (rv) {
+  case EFAULT:
+    fprintf(stderr, "%s:%d: %d:%02x fault retry:%d\n", __func__, __LINE__, ap, reg, retry);
+    if (retry) return rv;
+    retry = 1;
+    rv = swd_handle_fail(c);
+    assert(rv == 0);
+    goto retry;
+
+  default:
+    return rv;
+  }
 }
 
 struct port_field_desc {
@@ -363,14 +425,14 @@ label_addr:
     (*reg)(label, *(uint32_t*)bs);
 }
 
-static int swd_status(struct pinctl* c, uint32_t* status)
+static int swd_status(struct pinctl* c, uint32_t* status, int dump)
 {
   int err = swd_read(c, 0, REG_DP_STATUS, status);
   if (err) {
     fprintf(stderr, "%s:%d: swd_read(DP_STATUS):%d:%s\n", __func__, __LINE__, err, strerror(err));
     goto err_exit;
   }
-  if (verbose)
+  if (dump || verbose)
     dump_dp_status(*status);
 err_exit:
   return err;
@@ -942,6 +1004,56 @@ err_exit:
   return rv;
 }
 
+static void dump_regs(struct pinctl* c)
+{
+  static const char* sel_names[] = {
+    [ 0x0d ] = "sp",
+    [ 0x0e ] = "lr",
+    [ 0x0f ] = "debug_return",
+    [ 0x10 ] = "xpsr",
+    [ 0x11 ] = "msp",
+    [ 0x12 ] = "psp",
+    [ 0x14 ] = "control",
+  };
+  static const uint8_t sels[] = { 0x10, 0x11, 0x12, 0x14 };
+  uint32_t val;
+  int err;
+
+  for (uint32_t sel = 0; sel < 16; sel++) {
+    err = swd_ap_mem_write_u32(c, 0, REG_DCRSR, sel);
+    assert(err == 0);
+    int i;
+    for (i = 0; i < 8; i++) {
+usleep(250000);
+      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+      assert(err == 0);
+      if (val & (1 << 16)) break;
+    }
+
+    err = swd_ap_mem_read_u32(c, 0, REG_DCRDR, &val);
+    assert(err == 0);
+printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel] ? ":" : "", sel_names[sel] ? sel_names[sel] : "", val);
+  }
+
+  for (int j = 0; j < sizeof(sels); j++) {
+    const uint8_t sel = sels[j];
+    err = swd_ap_mem_write_u32(c, 0, REG_DCRSR, sel);
+    assert(err == 0);
+    int i;
+    for (i = 0; i < 8; i++) {
+usleep(250000);
+      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+      assert(err == 0);
+      if (val & (1 << 16)) break;
+    }
+
+    err = swd_ap_mem_read_u32(c, 0, REG_DCRDR, &val);
+      assert(err == 0);
+// printf("%s:%d: sel:%02x val:%08x\n", __func__, __LINE__, sel, val);
+printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel] ? ":" : "", sel_names[sel] ? sel_names[sel] : "", val);
+  }
+}
+
 int main(int argc, char** argv)
 {
   int rv = EXIT_FAILURE;
@@ -1019,7 +1131,7 @@ int main(int argc, char** argv)
 
   /* set power state */
   for (int i = 0; /**/; i++) {
-    opt = swd_status(pins, &val);
+    opt = swd_status(pins, &val, 0);
     assert(opt == 0);
     if ((val & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) == (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK))
       break;
@@ -1050,36 +1162,40 @@ int main(int argc, char** argv)
     if (val & (1 << 25))
       printf("%s:%d: held in reset?\n", __func__, __LINE__);
   }
+  if (verbose)
+    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
 
   /* halt and enable debug */
+#define HALT_WAIT_CYCLES 8
   if (!(val & (1 << 17))) {
-    val = (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0);
-    opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, val);
-    assert(opt == 0);
     int i;
-    for (i = 0; i < 8; i++) {
-      usleep(250000);
+    for (i = 0; (i < HALT_WAIT_CYCLES) && !(val & (1 << 17)); i++) {
+      val = (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0);
+      opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, val);
+      assert(opt == 0);
+      usleep(25000);
       opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
       assert(opt == 0);
-      if (val & (1 << 17)) break;
     }
-    printf("%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
+    fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
   }
 
-  /* set to hold after reset and hit the reset */
+  /* Set to hold after reset and hit the reset */
   opt = swd_ap_mem_read_u32(pins, 0, REG_DEMCR, &val);
   assert(opt == 0);
 fprintf(stderr, "%s:%d: demcr:%08x\n", __func__, __LINE__, val);
-  opt = swd_ap_mem_write_u32(pins, 0, REG_DEMCR, val | (1 << 0));
-  assert(opt == 0);
-  opt = swd_ap_mem_read_u32(pins, 0, REG_AIRCR, &val);
-  assert(opt == 0);
-fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
-  opt = swd_ap_mem_write_u32(pins, 0, REG_AIRCR, val | (1 << 2));
-  assert(opt == 0);
+ opt = swd_ap_mem_write_u32(pins, 0, REG_DEMCR, val | (1 << 0));
+ assert(opt == 0);
+ opt = swd_ap_mem_read_u32(pins, 0, REG_AIRCR, &val);
+ assert(opt == 0);
+ fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
+ opt = swd_ap_mem_write_u32(pins, 0, REG_AIRCR, val | (1 << 2));
+ assert(opt == 0);
   opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
   assert(opt == 0);
 fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+
+dump_regs(pins);
 
   if (mem_nb > 0)
     ftfl_mem_read(pins, mem_addr, mem_nb, f_out);
