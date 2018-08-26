@@ -126,7 +126,7 @@ struct pinctl* pins_open(unsigned phase)
   }
 
   PIN_DIR(rv->regs, PIN_CLOCK, 1);
-  PIN_DIR(rv->regs, PIN_DATA, 0);
+  PIN_DIR(rv->regs, PIN_DATA, 1);
 
   /* setup high-z configuration.
    *  data - up. the device is supposed to have this set?
@@ -176,6 +176,9 @@ static uint8_t clock_in_bit(struct pinctl* c)
 
 static void clock_turnaround(struct pinctl* c, int op)
 {
+  /* NB: toggle state before direction, it shows on the analyzer. */
+  PIN_WRITE(c->regs, PIN_DATA, 0);
+  PIN_DIR(c->regs, PIN_DATA, 0);
   for (int i = 0; i < 2; i++)
     clock_in_bit(c);
   c->last_rw_op = op;
@@ -209,6 +212,7 @@ int pins_read(struct pinctl* c, uint8_t* bs, int nb)
   assert(c->regs != MAP_FAILED);
 
   c->last_rw_op = 0;
+  /* NB: toggle state before direction, it shows on the analyzer. */
   PIN_WRITE(c->regs, PIN_DATA, 0);
   PIN_DIR(c->regs, PIN_DATA, 0);
   usleep(c->phase * 2);
