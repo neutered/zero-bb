@@ -1180,20 +1180,24 @@ int main(int argc, char** argv)
     fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
   }
 
-  /* Set to hold after reset and hit the reset */
+  /* Set to hold after reset ... */
   opt = swd_ap_mem_read_u32(pins, 0, REG_DEMCR, &val);
   assert(opt == 0);
 fprintf(stderr, "%s:%d: demcr:%08x\n", __func__, __LINE__, val);
  opt = swd_ap_mem_write_u32(pins, 0, REG_DEMCR, val | (1 << 0));
  assert(opt == 0);
+ /* assert sysreset */
  opt = swd_ap_mem_read_u32(pins, 0, REG_AIRCR, &val);
  assert(opt == 0);
  fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
  opt = swd_ap_mem_write_u32(pins, 0, REG_AIRCR, val | (1 << 2));
  assert(opt == 0);
+ /* 'validate' reset/halt state */
+ if (verbose) {
   opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
   assert(opt == 0);
 fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+ }
 
 dump_regs(pins);
 
