@@ -23,7 +23,7 @@
 
 #define REG_CPUID 0xe000ed00
 #define REG_AIRCR 0xe000ed0c
-#define REG_DSFR  0xe000ed30
+#define REG_DFSR  0xe000ed30
 #define REG_DHCSR 0xe000edf0
 #define REG_DCRSR 0xe000edf4
 #define REG_DCRDR 0xe000edf8
@@ -61,6 +61,12 @@ static int verbose;
 
 /* if dump | verbose parse status register bits */
 static int swd_status(struct pinctl* c, uint32_t* status, int dump);
+
+static void idle(struct pinctl* pins)
+{
+  static const uint8_t bs[] = { 0x00 };
+  pins_write(pins, bs, (sizeof(bs)) * 8);
+}
 
 static void resync(struct pinctl* pins, int idle)
 {
@@ -184,7 +190,8 @@ static int swd_handle_fail(struct pinctl* c)
 fprintf(stderr, "%s:%d: status:%08x\n", __func__, __LINE__, val);
   /* sticky errors? */
   uint32_t reg = 0x01;
-  assert((val & 0x32) != 0);
+  assert((val & 0xb2) != 0);
+  if (val & 0x80) reg |= (1 << 3);
   if (val & 0x20) reg |= (1 << 2);
   if (val & 0x10) reg |= (1 << 1);
   rv = internal_swd_write(c, 0, 0, reg);
@@ -1024,7 +1031,8 @@ static void dump_regs(struct pinctl* c)
     assert(err == 0);
     int i;
     for (i = 0; i < 8; i++) {
-usleep(250000);
+// usleep(250000);
+idle(c);
       err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
       assert(err == 0);
       if (val & (1 << 16)) break;
@@ -1041,7 +1049,8 @@ printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel]
     assert(err == 0);
     int i;
     for (i = 0; i < 8; i++) {
-usleep(250000);
+// usleep(250000);
+idle(c);
       err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
       assert(err == 0);
       if (val & (1 << 16)) break;
@@ -1054,6 +1063,77 @@ printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel]
   }
 }
 
+/* returns EBUSY if teh target appears to be stuck in reset.
+ */
+static int swd_halt(struct pinctl* c, int sysreset)
+{
+  /* for yucks, we do the double read to check if it's held in
+   * reset.in that case, flash accesses work, but debug stuff doesn't.
+   */
+  uint32_t val;
+  int err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+  assert(err == 0);
+  if (val & (1 << 25)) {
+    err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+    assert(err == 0);
+    if (val & (1 << 25)) {
+      fprintf(stderr, "%s:%d: held in reset?\n", __func__, __LINE__);
+      return EBUSY;
+    }
+  }
+  if (verbose)
+    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+
+  /* enable debug before going to doing any fiddling w/ sysreset */
+  if (!(val & ((1 << 17) | (1 << 0)))) {
+    /* halt and enable debug */
+    err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0));
+    assert(err == 0);
+
+    /* if sysreset, then the halt comes again later when we reset, but
+     * otherwise we wait for halt status to be asserted.
+     */
+#define HALT_WAIT_CYCLES 8
+    for (int i = 0; !sysreset && (i < HALT_WAIT_CYCLES) && !(val & (1 << 17)); i++) {
+      idle(c);
+      // usleep(10000);
+
+      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+      assert(err == 0);
+      if (verbose)
+        fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
+    }
+  }
+
+  if (sysreset) {
+    /* set to hold after reset ... */
+    err = swd_ap_mem_read_u32(c, 0, REG_DEMCR, &val);
+    assert(err == 0);
+    if (verbose)
+      fprintf(stderr, "%s:%d: demcr:%08x\n", __func__, __LINE__, val);
+    if (!(val & (1 << 0))) {
+      err = swd_ap_mem_write_u32(c, 0, REG_DEMCR, val | (1 << 0));
+      assert(err == 0);
+    }
+
+    /* assert sysreset */
+    err = swd_ap_mem_read_u32(c, 0, REG_AIRCR, &val);
+    assert(err == 0);
+    if (verbose)
+      fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
+    err = swd_ap_mem_write_u32(c, 0, REG_AIRCR, val | (1 << 2));
+    assert(err == 0);
+  }
+
+  /* validate halt state */
+  err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+  assert(err == 0);
+  if (verbose)
+    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+
+  return (val & (1 << 17)) ? 0 : ETIMEDOUT;
+}
+
 int main(int argc, char** argv)
 {
   int rv = EXIT_FAILURE;
@@ -1063,13 +1143,18 @@ int main(int argc, char** argv)
   uint32_t mem_nb = 0;
   const char* f_out = NULL;
   const char* f_verify = NULL;
+  int sysreset = 0;
 
-  while ((opt = getopt(argc, argv, "c:o:p:r:v")) != -1) {
+  while ((opt = getopt(argc, argv, "c:o:p:r:sSv")) != -1) {
     char* end;
 
     switch (opt) {
     case 'c':
       f_verify = optarg;
+      break;
+    case 's':
+    case 'S':
+      sysreset = opt == 'S';
       break;
     case 'o':
       f_out = optarg;
@@ -1151,54 +1236,21 @@ int main(int argc, char** argv)
   assert(opt == 0);
   printf("%s:%d: cpuid:%08x\n", __func__, __LINE__, val);
 
-  /* halt the processor before futzing w/ flash. just for yucks, we do
-   * the double read to check if it's still in reset.
+  /* we have to halt the processor to do anything, but we either do a
+   * system reset or stop it where it's at. by default we just stop
+   * the processor.
    */
-  opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
-  assert(opt == 0);
-  if (val & (1 << 25)) {
-    opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
-    assert(opt == 0);
-    if (val & (1 << 25))
-      printf("%s:%d: held in reset?\n", __func__, __LINE__);
-  }
-  if (verbose)
-    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+  opt = swd_halt(pins, sysreset);
 
-  /* halt and enable debug */
-#define HALT_WAIT_CYCLES 8
-  if (!(val & (1 << 17))) {
-    int i;
-    for (i = 0; (i < HALT_WAIT_CYCLES) && !(val & (1 << 17)); i++) {
-      val = (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0);
-      opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, val);
-      assert(opt == 0);
-      usleep(25000);
-      opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
-      assert(opt == 0);
-    }
-    fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
-  }
-
-  /* Set to hold after reset ... */
-  opt = swd_ap_mem_read_u32(pins, 0, REG_DEMCR, &val);
-  assert(opt == 0);
-fprintf(stderr, "%s:%d: demcr:%08x\n", __func__, __LINE__, val);
- opt = swd_ap_mem_write_u32(pins, 0, REG_DEMCR, val | (1 << 0));
- assert(opt == 0);
- /* assert sysreset */
- opt = swd_ap_mem_read_u32(pins, 0, REG_AIRCR, &val);
- assert(opt == 0);
- fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
- opt = swd_ap_mem_write_u32(pins, 0, REG_AIRCR, val | (1 << 2));
- assert(opt == 0);
- /* 'validate' reset/halt state */
- if (verbose) {
-  opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
-  assert(opt == 0);
-fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
+assert(opt == 0);
+dump_regs(pins);
+ for (int i = 0; i < 8; i++) {
+opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 2) | (1 << 0));
+assert(opt == 0);
+// usleep(10000);
+idle(pins);
  }
-
 dump_regs(pins);
 
   if (mem_nb > 0)
