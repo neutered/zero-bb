@@ -56,7 +56,7 @@ STORE((__r) + i, (1 << s), __ATOMIC_RELEASE); \
 #define PIN_READ(__r, __p) ({ \
 unsigned i = (0x34 / 4) + ((__p) / 32); \
 unsigned s= (__p) % 32; \
-!!(LOAD((__r) + i, __ATOMIC_ACQUIRE) & (1 << s));	\
+!!(LOAD((__r) + i, __ATOMIC_ACQUIRE) & (1 << s)); \
 })
 
 struct pinctl {
@@ -115,7 +115,6 @@ struct pinctl* pins_open(unsigned phase)
   rv->fd = -1;
   rv->regs = MAP_FAILED;
   rv->phase = phase;
-  rv->last_rw_op = 1;
 
   rv->fd = open("/dev/gpiomem", O_RDWR);
   if (rv->fd == -1) {
@@ -129,15 +128,17 @@ struct pinctl* pins_open(unsigned phase)
     goto err_exit;
   }
 
-  PIN_DIR(rv->regs, PIN_CLOCK, 1);
-  PIN_DIR(rv->regs, PIN_DATA, 1);
-
   /* setup high-z configuration.
    *  data - up. the device is supposed to have this set?
    *  clock - down. this is always host controlled?
    */
-  config_hiz(rv, PIN_CLOCK, -1);
+  config_hiz(rv, PIN_CLOCK, 0);
   config_hiz(rv, PIN_DATA, 1);
+
+  /* default data to output */
+  rv->last_rw_op = 1;
+  PIN_DIR(rv->regs, PIN_CLOCK, 1);
+  PIN_DIR(rv->regs, PIN_DATA, 1);
 
   return rv;
 
@@ -177,14 +178,26 @@ static uint8_t clock_in_bit(struct pinctl* c)
   return rv;
 }
 
-static void clock_turnaround(struct pinctl* c, int op)
+static int clock_turnaround(struct pinctl* c, int op)
 {
-  /* NB: toggle state before direction, it shows on the analyzer. */
-  PIN_WRITE(c->regs, PIN_DATA, 0);
+  if (c->last_rw_op == op)
+    return 0;
+
+  /* the pin is not supposed be driven by either host or target, but
+   * when we change to input state the drive stops. dropping the pin
+   * is only so that it shows up on the analyzer before the mode
+   * changes to allow for the pin not to be driven.
+   */
+  if (c->last_rw_op)
+    PIN_WRITE(c->regs, PIN_DATA, 0);
   PIN_DIR(c->regs, PIN_DATA, 0);
-  for (int i = 0; i < 2; i++)
+  for (int i = 0; i < 1; i++)
     clock_in_bit(c);
+  if (op)
+    PIN_DIR(c->regs, PIN_DATA, 1);
   c->last_rw_op = op;
+
+  return 1;
 }
 
 int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
@@ -193,11 +206,7 @@ int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
   assert(c->regs != MAP_FAILED);
 
   /* turnaround time? */
-  if (c->last_rw_op != 1)
-    clock_turnaround(c, 1);
-
-  PIN_DIR(c->regs, PIN_DATA, 1);
-  usleep(c->phase * 2);
+  clock_turnaround(c, 1);
 
   int i, j;
   for (i = 0; i < nb / 8; i++)
@@ -214,11 +223,8 @@ int pins_read(struct pinctl* c, uint8_t* bs, int nb)
   assert(c != NULL);
   assert(c->regs != MAP_FAILED);
 
-  c->last_rw_op = 0;
-  /* NB: toggle state before direction, it shows on the analyzer. */
-  PIN_WRITE(c->regs, PIN_DATA, 0);
-  PIN_DIR(c->regs, PIN_DATA, 0);
-  usleep(c->phase * 2);
+  /* turnaround time? */
+  clock_turnaround(c, 0);
 
   int i, j;
   for (i = 0; i < nb / 8; i++) {
