@@ -168,10 +168,9 @@ static void clock_out_bit(struct pinctl* c, int val)
 
 static uint8_t clock_in_bit(struct pinctl* c)
 {
-  PIN_WRITE(c->regs, PIN_CLOCK, 1);
-  usleep(c->phase / 2);
   uint8_t rv = PIN_READ(c->regs, PIN_DATA);
-  usleep(c->phase / 2);
+  PIN_WRITE(c->regs, PIN_CLOCK, 1);
+  usleep(c->phase);
   PIN_WRITE(c->regs, PIN_CLOCK, 0);
   usleep(c->phase);
 
