@@ -1166,8 +1166,13 @@ int main(int argc, char** argv)
         phase *= 1000;
       else if (strcmp("s", end) == 0)
         phase *= 1000000;
+      else if (strcmp("hz", end) == 0)
+        phase = 500000 / phase;
+      else if (strcmp("khz", end) == 0)
+        phase = 500000 / (phase * 1000);
       else
         assert((*end == '\0') || (strcmp("us", end) == 0));
+      assert(phase > 0);
       break;
     case 'r':
       mem_addr = strtoull(optarg, &end, 0);
