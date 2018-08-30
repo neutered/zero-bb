@@ -82,17 +82,21 @@ struct pinctl {
 static void config_hiz(struct pinctl* c, int pin, int sel)
 {
   uint32_t val = (sel < 0 ? 0x01 : /* down */
-		  sel > 0 ? 0x02 : /* up */
-		  0x00);           /* disable */
-  int i = pin / 32;
+                  sel > 0 ? 0x02 : /* up */
+                  0x00);           /* disable */
+  int o = pin / 32;
   int s = pin % 32;
 
   STORE(c->regs + (0x94 / 4), val, __ATOMIC_RELEASE);
-usleep(1000);
-  STORE(c->regs + (0x98 / 4) + i, (1 << s), __ATOMIC_RELEASE);
-usleep(1000);
-  STORE(c->regs + (0x94 / 4), 0, __ATOMIC_RELEASE);
-usleep(1000);
+usleep(10000);
+  for (int i = 0; i < 2; i++)
+    STORE(c->regs + (0x98 / 4) + i, i == o ? (1 << s) : 0, __ATOMIC_RELEASE);
+usleep(10000);
+  for (int i = 0; i < 2; i++)
+    STORE(c->regs + (0x98 / 4) + i, 0, __ATOMIC_RELEASE);
+usleep(10000);
+// STORE(c->regs + (0x94 / 4), 0, __ATOMIC_RELEASE);
+// usleep(10000);
 }
 
 struct pinctl* pins_open(unsigned phase)
