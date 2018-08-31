@@ -102,10 +102,14 @@ usleep(10000);
 struct pinctl* pins_open(unsigned phase)
 {
   /* make sure the clock rate is representable w/ usleep(3) since i'm
-   * lazy and linux isn't quite rtos-y.
+   * lazy and linux isn't quite rtos-y. also the spec says that the max
+   * clock phase time is 500us.
    */
   if (phase < 10) {
-    fprintf(stderr, "%s:%d: phase:%u not representable\n", __func__, __LINE__, phase);
+    fprintf(stderr, "%s:%d: phase:%uus not representable\n", __func__, __LINE__, phase);
+    return NULL;
+  } else if (phase > 500) {
+    fprintf(stderr, "%s:%d: phase:%uus out of spec (max 500us)\n", __func__, __LINE__, phase);
     return NULL;
   }
   printf("%s:%d: clock phase:time %uus\n", __func__, __LINE__, phase);
