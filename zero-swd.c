@@ -1137,7 +1137,7 @@ static int swd_halt(struct pinctl* c, int sysreset)
 int main(int argc, char** argv)
 {
   int rv = EXIT_FAILURE;
-  unsigned phase = 1000;
+  unsigned phase = 500; /* us */
   int opt;
   uint64_t mem_addr;
   uint32_t mem_nb = 0;
