@@ -256,6 +256,7 @@ static void dump_reg(const char* func, const char* label, const struct port_fiel
   }
   fprintf(stderr, "\n");
 }
+
 static void dump_dp_status(uint32_t status)
 {
   static const struct port_field_desc fields[] = {
@@ -277,6 +278,20 @@ static void dump_dp_status(uint32_t status)
     { 0, 0, "orundetect" },
   };
   dump_reg(__func__, "dp_status", fields, sizeof(fields) / sizeof(fields[0]), status);
+}
+
+static void dump_dp_idcode(uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 28, "revision" },
+    { 27, 20, "partno" },
+    { 19, 17, "reserved0" },
+    { 16, 16, "min" },
+    { 15, 12, "version" },
+    { 11, 1, "designer" },
+    { 0, 0, "rao" },
+  };
+  dump_reg(__func__, "dp_idcode", fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void dump_ap_status(uint32_t status)
@@ -1219,7 +1234,11 @@ int main(int argc, char** argv)
     fprintf(stderr, "%s:%d: swd_read(IDCODE):%d:%s\n", __func__, __LINE__, opt, strerror(opt));
     goto err_exit;
   }
-  printf("%s:%d: idcode:%08x\n", __func__, __LINE__, val);
+  dump_dp_idcode(val);
+  /* at least v1, but we've already tried dp idcode so it's too late */
+  assert(((val >> 12) & 0xf) >= 1);
+  /* cortex-m4 has arm designer */
+  assert(((val >> 1) & 0x7ff) == 0x023b);
 
   /* set power state */
   for (int i = 0; /**/; i++) {
