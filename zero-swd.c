@@ -540,9 +540,9 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
     switch (slop_head) {
-    case 1: *bs++ = (val >> 8) & 0xff;
-    case 2: *bs++ = (val >> 16) & 0xff;
-    case 3: *bs++ = (val >> 24) & 0xff;
+    case 1: if (nb) { nb--; *bs++ = (val >> 8) & 0xff; }
+    case 2: if (nb) { nb--; *bs++ = (val >> 16) & 0xff; }
+    case 3: if (nb) { nb--; *bs++ = (val >> 24) & 0xff; }
       break;
 
     default:
@@ -550,7 +550,7 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     }
   }
 
-  for (int i = 0; i < nb / 4; i++) {
+  for (/**/; nb > 4; nb -= 4) {
     err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
     *bs++ = (val >> 0) & 0xff;
@@ -563,15 +563,16 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
     switch (slop_tail) {
-      case 3: *bs++ = (val >> 8) & 0xff;
-      case 2: *bs++ = (val >> 16) & 0xff;
-      case 1: *bs++ = (val >> 24) & 0xff;
-        break;
+    case 3: if (nb) { nb--; *bs++ = (val >> 8) & 0xff; }
+    case 2: if (nb) { nb--; *bs++ = (val >> 16) & 0xff; }
+    case 1: if (nb) { nb--; *bs++ = (val >> 24) & 0xff; }
+      break;
 
-      default:
-        assert(0);
+    default:
+      assert(0);
     }
   }
+  assert(nb == 0);
 
   if (verbose)
     dump_mem(addr, orig_bs, orig_nb);
