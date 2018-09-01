@@ -550,7 +550,7 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     }
   }
 
-  for (/**/; nb > 4; nb -= 4) {
+  for (/**/; nb >= 4; nb -= 4) {
     err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
     *bs++ = (val >> 0) & 0xff;
