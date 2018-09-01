@@ -1131,6 +1131,7 @@ static int swd_halt(struct pinctl* c, int sysreset)
   assert(err == 0);
   if (verbose)
     fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+assert(val & (1 << 17));
 
   return (val & (1 << 17)) ? 0 : ETIMEDOUT;
 }
@@ -1232,15 +1233,20 @@ int main(int argc, char** argv)
     }
   }
 
-  /* it should be a memory access class */
+  /* it should be a memory access class. the identity/continuation
+   * codes on the k20 match arm.
+   */
   opt = swd_ap_idcode(pins, 0, &val);
   assert(opt == 0);
   assert(((val >> 13) & 0x0f) == 0x08);
+  assert(((val >> 17) & 0x7f) == 0x3b);
+  assert(((val >> 24) & 0x0f) == 0x04);
 
   /* it doesn't matter about the cpuid, but it's informational */
   opt = swd_ap_mem_read_u32(pins, 0, REG_CPUID, &val);
   assert(opt == 0);
   printf("%s:%d: cpuid:%08x\n", __func__, __LINE__, val);
+  assert(((val >> 4) & 0x0fff) == 0x0c24); /* cortex-m4 */
 
   /* we have to halt the processor to do anything, but we either do a
    * system reset or stop it where it's at. by default we just stop
