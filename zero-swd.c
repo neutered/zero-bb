@@ -555,9 +555,9 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     err = swd_ap_read(c, ap, REG_AP_MEM_DRW, &val);
     assert(err == 0);
     switch (slop_head) {
-    case 1: if (nb) { nb--; *bs++ = (val >> 8) & 0xff; }
-    case 2: if (nb) { nb--; *bs++ = (val >> 16) & 0xff; }
-    case 3: if (nb) { nb--; *bs++ = (val >> 24) & 0xff; }
+    case 1: *bs++ = (val >> 8) & 0xff;
+    case 2: *bs++ = (val >> 16) & 0xff;
+    case 3: *bs++ = (val >> 24) & 0xff;
       break;
 
     default:
