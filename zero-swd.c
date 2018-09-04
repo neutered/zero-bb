@@ -64,8 +64,12 @@ static int swd_status(struct pinctl* c, uint32_t* status, int dump);
 
 static void idle(struct pinctl* pins)
 {
-  static const uint8_t bs[] = { 0x00 };
-  pins_write(pins, bs, (sizeof(bs)) * 8);
+  #if 0
+static const uint8_t bs[] = { 0x00, 0x00, 0x00, 0x00, };
+pins_write(pins, bs, (sizeof(bs)) * 8);
+#else
+usleep(100000);
+#endif
 }
 
 static void resync(struct pinctl* pins, int idle)
@@ -126,7 +130,7 @@ static int send_op(struct pinctl* c, int ap, int reg, int rw)
       return 0;
     case 2:
       /* FixMe: what's a good delay? does it depend on the outstanding op? */
-      usleep(10000);
+      idle(c);
       break;
     case 4:
       return EFAULT;
@@ -462,6 +466,17 @@ err_exit:
 
 static int swd_ap_select(struct pinctl* c, uint8_t sel, uint8_t bank)
 {
+static uint8_t prev_sel = -1;
+static uint8_t prev_bank = -1;
+if (verbose > 2)
+fprintf(stderr, "%s:%d: sel:%02x bank:%02x\n", __func__, __LINE__, sel, bank);
+if (prev_sel == sel && prev_bank == bank) {
+if (verbose > 2)
+fprintf(stderr, "%s:%d: repeat ap sel:%02x bank:%02x\n", __func__, __LINE__, sel, bank);
+return 0;
+}
+prev_sel = sel;
+prev_bank = bank;
   uint32_t val = (sel << 24) | (bank << 4);
   return swd_write(c, 0, REG_DP_SELECT, val);
 }
@@ -483,7 +498,6 @@ static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
   rv = swd_read(c, 1, offset, out);
   assert(rv == 0);
   if (rv != 0) return rv;
-
   rv = swd_read(c, 0, REG_DP_RDBUFF, out);
   assert(rv == 0);
   if (rv != 0) return rv;
@@ -495,6 +509,8 @@ static int swd_ap_read(struct pinctl* c, int ap, uint8_t reg, uint32_t* out)
 
 static int swd_ap_write(struct pinctl* c, int ap, uint8_t reg, uint32_t val)
 {
+  if (verbose > 1)
+    fprintf(stderr, "%s:%d: ap:%02x reg:%02x val:%08x\n", __func__, __LINE__, ap, reg, val);
   uint8_t bank = (reg >> 4) & 0x0f;
   uint8_t offset = (reg >> 0) & 0x0f;
   int rv = swd_ap_select(c, ap, bank);
@@ -526,10 +542,13 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
   assert(err == 0);
   if (verbose)
     dump_ap_mem_csw(csw);
+// assert((csw >> 6) & 0x01);
 
   /* set 32-bit transfer size and auto-increment on access */
-  err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (1 << 4) | (2 << 0));
-  assert(err == 0);
+  if ((csw & ((3 << 4) | (7 << 0))) != ((1 << 4) | (2 << 0))) {
+    err = swd_ap_write(c, ap, REG_AP_MEM_CSW, (csw & ~((3 << 4) | (7 << 0))) | (1 << 4) | (2 << 0));
+    assert(err == 0);
+  }
 
   /* the DWR access always returns 32-bits regardless of the size set
    * in CSW (ie, not a single byte if that's set). align the start/end
@@ -541,10 +560,13 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
     nb -= (4 - slop_head);
     addr &= ~0x03;
   }
+
   unsigned slop_tail = (nb & 0x03);
   assert((addr & 0x03) == 0);
   err = swd_ap_write(c, ap, REG_AP_MEM_TAR_LO, (addr >> 0) & 0xffffffff);
   assert(err == 0);
+
+  /* 64-bit addressing? */
   if (cfg & 0x02) {
     err = swd_ap_write(c, ap, REG_AP_MEM_TAR_HI, (addr >> 32) & 0xffffffff);
     assert(err == 0);
@@ -1047,7 +1069,6 @@ static void dump_regs(struct pinctl* c)
     assert(err == 0);
     int i;
     for (i = 0; i < 8; i++) {
-// usleep(250000);
 idle(c);
       err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
       assert(err == 0);
@@ -1065,7 +1086,6 @@ printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel]
     assert(err == 0);
     int i;
     for (i = 0; i < 8; i++) {
-// usleep(250000);
 idle(c);
       err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
       assert(err == 0);
@@ -1089,6 +1109,7 @@ static int swd_halt(struct pinctl* c, int sysreset)
   uint32_t val;
   int err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
   assert(err == 0);
+fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
   if (val & (1 << 25)) {
     err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
     assert(err == 0);
@@ -1097,8 +1118,8 @@ static int swd_halt(struct pinctl* c, int sysreset)
       return EBUSY;
     }
   }
-  if (verbose)
-    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+// if (verbose)
+fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
 
   /* enable debug before going to doing any fiddling w/ sysreset */
   if (!(val & ((1 << 17) | (1 << 0)))) {
@@ -1112,7 +1133,6 @@ static int swd_halt(struct pinctl* c, int sysreset)
 #define HALT_WAIT_CYCLES 8
     for (int i = 0; !sysreset && (i < HALT_WAIT_CYCLES) && !(val & (1 << 17)); i++) {
       idle(c);
-      // usleep(10000);
 
       err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
       assert(err == 0);
@@ -1139,6 +1159,19 @@ static int swd_halt(struct pinctl* c, int sysreset)
       fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
     err = swd_ap_mem_write_u32(c, 0, REG_AIRCR, val | (1 << 2));
     assert(err == 0);
+
+    for (int i = 0; (i < HALT_WAIT_CYCLES) && !(val & (1 << 25)); i++) {
+      idle(c);
+
+      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+      assert(err == 0);
+      if (verbose)
+        fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
+    }
+assert(val & (1 << 25));
+      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+      assert(err == 0);
+assert(!(val & (1 << 25)));
   }
 
   /* validate halt state */
@@ -1252,7 +1285,7 @@ int main(int argc, char** argv)
     }
   }
 
-  /* it should be a memory access class. the identity/continuation
+  /* ap 0 should be a memory access class. the identity/continuation
    * codes on the k20 match arm.
    */
   opt = swd_ap_idcode(pins, 0, &val);
@@ -1260,6 +1293,52 @@ int main(int argc, char** argv)
   assert(((val >> 13) & 0x0f) == 0x08);
   assert(((val >> 17) & 0x7f) == 0x3b);
   assert(((val >> 24) & 0x0f) == 0x04);
+
+  /* the k20 has an mdm ap w/ stuff like mass erase and more debug control. */
+  opt = swd_ap_idcode(pins, 1, &val);
+  assert(opt == 0);
+  printf("%s:%d: mdm-ap idr:%08x\n", __func__, __LINE__, val);
+  assert(val == 0x001c0000);
+
+  /* mdm ap debug overides the dhcsr setting, and security enabled
+   * disables bus access to memory.
+   */
+  opt = swd_ap_read(pins, 1, 0x00, &val);
+  assert(opt == 0);
+  printf("%s:%d: mdm-ap status:%08x\n", __func__, __LINE__, val);
+  assert(val & (1 << 5));
+  if (val & (1 << 2)) {
+    opt = swd_ap_read(pins, 1, 0x04, &val);
+    assert(opt == 0);
+    printf("%s:%d: mdm-ap control:%08x\n", __func__, __LINE__, val);
+// assert(!(val & 0x01));
+
+    opt = swd_ap_write(pins, 1, 0x04, val | 0x01);
+    assert(opt == 0);
+
+    int i;
+    for (i = 0; i < 6; i++) {
+    opt = swd_ap_read(pins, 1, 0x00, &val);
+    assert(opt == 0);
+    printf("%s:%d: mdm-ap status:%08x\n", __func__, __LINE__, val);
+    if (val & (1 << 0)) break;
+sleep(10);
+    }
+assert(val & (1 << 0));
+    printf("\nerase ack:%d\n", i);
+
+    for (i = 0; i < 6; i++) {
+      opt = swd_ap_read(pins, 1, 0x04, &val);
+      assert(opt == 0);
+printf("%s:%d: mdm-ap control:%08x\n", __func__, __LINE__, val);
+if (!(val & (1 << 0))) break;
+sleep(10);
+    }
+assert(!(val & (1 << 0)));
+    printf("\nerase:%d\n", i);
+
+    assert(0);
+  }
 
   /* it doesn't matter about the cpuid, but it's informational */
   opt = swd_ap_mem_read_u32(pins, 0, REG_CPUID, &val);
@@ -1273,13 +1352,27 @@ int main(int argc, char** argv)
    */
   opt = swd_halt(pins, sysreset);
 
+  opt = swd_ap_read(pins, 0, REG_AP_MEM_CSW, &val);
+  assert(opt == 0);
+  if (verbose)
+    dump_ap_mem_csw(val);
+  if (!((val >> 31) & 0x01)) {
+    opt = swd_ap_write(pins, 0, REG_AP_MEM_CSW, val | (1 << 31));
+    assert(opt == 0);
+    opt = swd_ap_read(pins, 0, REG_AP_MEM_CSW, &val);
+    assert(opt == 0);
+    if (verbose)
+      dump_ap_mem_csw(val);
+  }
+  assert((val >> 6) & 0x01);
+
 opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
 assert(opt == 0);
 dump_regs(pins);
+assert(0);
  for (int i = 0; i < 8; i++) {
 opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 2) | (1 << 0));
 assert(opt == 0);
-// usleep(10000);
 idle(pins);
  }
 dump_regs(pins);
