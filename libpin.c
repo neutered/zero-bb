@@ -89,11 +89,9 @@ static void config_hiz(struct pinctl* c, int pin, int sel)
 
   STORE(c->regs + (0x94 / 4), val, __ATOMIC_RELEASE);
 usleep(10000);
-  for (int i = 0; i < 2; i++)
-    STORE(c->regs + (0x98 / 4) + i, i == o ? (1 << s) : 0, __ATOMIC_RELEASE);
+  STORE(c->regs + (0x98 / 4) + o, 1 << s, __ATOMIC_RELEASE);
 usleep(10000);
-  for (int i = 0; i < 2; i++)
-    STORE(c->regs + (0x98 / 4) + i, 0, __ATOMIC_RELEASE);
+  STORE(c->regs + (0x98 / 4) + o, 0, __ATOMIC_RELEASE);
 usleep(10000);
 // STORE(c->regs + (0x94 / 4), 0, __ATOMIC_RELEASE);
 // usleep(10000);
@@ -136,13 +134,17 @@ struct pinctl* pins_open(unsigned phase)
    *  data - up. the device is supposed to have this set?
    *  clock - down. this is always host controlled?
    */
-  config_hiz(rv, PIN_CLOCK, 0);
-  config_hiz(rv, PIN_DATA, 1);
+#define PIN_HIZ_DATA 1
+  config_hiz(rv, PIN_CLOCK, -1);
+  config_hiz(rv, PIN_DATA, PIN_HIZ_DATA);
 
   /* default data to output */
   rv->last_rw_op = 1;
   PIN_DIR(rv->regs, PIN_CLOCK, 1);
   PIN_DIR(rv->regs, PIN_DATA, 1);
+
+  PIN_WRITE(rv->regs, PIN_DATA, 1);
+  PIN_WRITE(rv->regs, PIN_CLOCK, 0);
 
   return rv;
 
@@ -193,7 +195,7 @@ static int clock_turnaround(struct pinctl* c, int op)
    * changes to allow for the pin not to be driven.
    */
   if (c->last_rw_op)
-    PIN_WRITE(c->regs, PIN_DATA, 0);
+    PIN_WRITE(c->regs, PIN_DATA, PIN_HIZ_DATA <= 0 ? 0 : 1);
   PIN_DIR(c->regs, PIN_DATA, 0);
   for (int i = 0; i < 1; i++)
     clock_in_bit(c);
