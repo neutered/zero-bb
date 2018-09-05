@@ -8,7 +8,7 @@ LD=$(PATH_PREFIX)/$(PREFIX)-ld
 
 CFLAGS=-Wall -g
 
-PROGS=zero-test zero-swd zero-ez
+PROGS=zero-test zero-swd
 LIBS=libpin.a
 
 all: $(PROGS)
@@ -19,10 +19,7 @@ zero-test: test.c
 zero-swd: zero-swd.o libpin.a
 	$(CC) -o $@ $^
 
-zero-ez: zero-ez.o pinutil.h
-	$(CC) -o $@ $^
-
-libpin.a: libpin.o pinutil.h
+<<libpin.a: libpin.o pinutil.h
 	$(AR) cr $@ $^
 
 libpin.i: libpin.c libpin.h
