@@ -19,7 +19,7 @@ zero-test: test.c
 zero-swd: zero-swd.o libpin.a
 	$(CC) -o $@ $^
 
-<<libpin.a: libpin.o pinutil.h
+libpin.a: libpin.o pinutil.h
 	$(AR) cr $@ $^
 
 libpin.i: libpin.c libpin.h
