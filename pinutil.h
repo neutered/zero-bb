@@ -25,7 +25,7 @@ unsigned i = ((__p) / 10); \
 unsigned s = 3 * ((__p) % 10); \
  uint32_t v = LOAD((__r) + i, __ATOMIC_ACQUIRE); \
 v &= ~(3 << s); \
-v |= ((__d) << s); \
+v |= ((__d) << s) & (1 << s); \
 STORE((__r) + i, v, __ATOMIC_RELEASE); \
 } while (0)
 
