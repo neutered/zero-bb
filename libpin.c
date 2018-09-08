@@ -95,18 +95,18 @@ void pins_close(struct pinctl* c)
   free(c);
 }
 
-static void clock_out_bit(struct pinctl* c, int val)
+static void clock_out_bit(struct pinctl* c, int p, int val)
 {
-  PIN_WRITE(c->regs, PIN_DATA, val);
+  PIN_WRITE(c->regs, p, val);
   PIN_WRITE(c->regs, PIN_CLOCK, 1);
   usleep(c->phase);
   PIN_WRITE(c->regs, PIN_CLOCK, 0);
   usleep(c->phase);
 }
 
-static uint8_t clock_in_bit(struct pinctl* c)
+static uint8_t clock_in_bit(struct pinctl* c, int p)
 {
-  uint8_t rv = PIN_READ(c->regs, PIN_DATA);
+  uint8_t rv = PIN_READ(c->regs, p);
   PIN_WRITE(c->regs, PIN_CLOCK, 1);
   usleep(c->phase);
   PIN_WRITE(c->regs, PIN_CLOCK, 0);
@@ -129,7 +129,7 @@ static int clock_turnaround(struct pinctl* c, int op)
     PIN_WRITE(c->regs, PIN_DATA, PIN_HIZ_DATA <= 0 ? 0 : 1);
   PIN_DIR(c->regs, PIN_DATA, 0);
   for (int i = 0; i < 1; i++)
-    clock_in_bit(c);
+    clock_in_bit(c, PIN_DATA);
   if (op)
     PIN_DIR(c->regs, PIN_DATA, 1);
   c->last_rw_op = op;
@@ -148,9 +148,9 @@ int pins_write(struct pinctl* c, const uint8_t* bs, int nb)
   int i, j;
   for (i = 0; i < nb / 8; i++)
     for (j = 0; j < 8; j++)
-      clock_out_bit(c, bs[i] & (1 << j));
+      clock_out_bit(c, PIN_DATA, bs[i] & (1 << j));
   for (j = 0; j < (nb & 7); j++)
-    clock_out_bit(c, bs[i] & (1 << j));
+    clock_out_bit(c, PIN_DATA, bs[i] & (1 << j));
 
   return nb;
 }
