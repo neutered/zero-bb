@@ -536,11 +536,11 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
 
   err = swd_ap_read(c, ap, REG_AP_MEM_CFG, &cfg);
   assert(err == 0);
-  if (verbose)
+  if (verbose > 2)
     dump_ap_mem_cfg(cfg);
   err = swd_ap_read(c, ap, REG_AP_MEM_CSW, &csw);
   assert(err == 0);
-  if (verbose)
+  if (verbose > 2)
     dump_ap_mem_csw(csw);
 // assert((csw >> 6) & 0x01);
 
@@ -611,7 +611,7 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
   }
   assert(nb == 0);
 
-  if (verbose)
+  if (verbose > 1)
     dump_mem(addr, orig_bs, orig_nb);
 
   return 0;
@@ -625,11 +625,11 @@ static int swd_ap_mem_write(struct pinctl* c, int ap, uint64_t addr, const uint8
 
   err = swd_ap_read(c, ap, REG_AP_MEM_CFG, &cfg);
   assert(err == 0);
-  if (verbose)
+  if (verbose > 2)
     dump_ap_mem_cfg(cfg);
   err = swd_ap_read(c, ap, REG_AP_MEM_CSW, &csw);
   assert(err == 0);
-  if (verbose)
+  if (verbose > 2)
     dump_ap_mem_csw(csw);
 
   /* the DWR access always returns 32-bits regardless of the size set
@@ -1156,7 +1156,7 @@ static int swd_halt(struct pinctl* c, int sysreset)
     assert(err == 0);
     if (verbose)
       fprintf(stderr, "%s:%d: aircr:%08x\n", __func__, __LINE__, val);
-    err = swd_ap_mem_write_u32(c, 0, REG_AIRCR, val | (1 << 2));
+    err = swd_ap_mem_write_u32(c, 0, REG_AIRCR, (val & 0x0000ffff) | 0x05fa0000 | (1 << 2));
     assert(err == 0);
 
     for (int i = 0; (i < HALT_WAIT_CYCLES) && !(val & (1 << 25)); i++) {
@@ -1167,10 +1167,8 @@ static int swd_halt(struct pinctl* c, int sysreset)
       if (verbose)
         fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
     }
-assert(val & (1 << 25));
-      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
-      assert(err == 0);
-assert(!(val & (1 << 25)));
+    /* we're held in reset so another dhcsr read doesn't clear that */
+    assert(val & (1 << 25));
   }
 
   /* validate halt state */
@@ -1367,22 +1365,6 @@ erase_fail:
    */
   opt = swd_halt(pins, sysreset);
 
-  opt = swd_ap_read(pins, 0, REG_AP_MEM_CSW, &val);
-  assert(opt == 0);
-  if (verbose)
-    dump_ap_mem_csw(val);
-  if (!((val >> 31) & 0x01)) {
-    opt = swd_ap_write(pins, 0, REG_AP_MEM_CSW, val | (1 << 31));
-    assert(opt == 0);
-    opt = swd_ap_read(pins, 0, REG_AP_MEM_CSW, &val);
-    assert(opt == 0);
-    if (verbose)
-      dump_ap_mem_csw(val);
-  }
-  assert((val >> 6) & 0x01);
-
-opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
-assert(opt == 0);
 dump_regs(pins);
  for (int i = 0; i < 8; i++) {
 opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 2) | (1 << 0));
