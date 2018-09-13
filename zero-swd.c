@@ -1109,7 +1109,6 @@ static int swd_halt(struct pinctl* c, int sysreset)
   uint32_t val;
   int err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
   assert(err == 0);
-fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
   if (val & (1 << 25)) {
     err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
     assert(err == 0);
@@ -1118,8 +1117,8 @@ fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
       return EBUSY;
     }
   }
-// if (verbose)
-fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+  if (verbose)
+    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
 
   /* enable debug before going to doing any fiddling w/ sysreset */
   if (!(val & ((1 << 17) | (1 << 0)))) {
