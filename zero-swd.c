@@ -1275,14 +1275,15 @@ int main(int argc, char** argv)
 
   /* set power state */
   for (int i = 0; /**/; i++) {
-    opt = swd_status(pins, &val, 0);
+    opt = swd_status(pins, &val, 1);
     assert(opt == 0);
-    if ((val & (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK)) == (CSYSPWRUPACK | CDBGPWRUPACK | CDBGRSTACK))
+    if ((val & (CSYSPWRUPACK | CDBGPWRUPACK)) == (CSYSPWRUPACK | CDBGPWRUPACK))
       break;
     if (i == 0) {
       opt = swd_write(pins, 0, REG_DP_STATUS, CSYSPWRUPREQ | CDBGPWRUPREQ | CDBGRSTREQ);
       assert(opt == 0);
     }
+    idle(pins);
   }
 
   /* ap 0 should be a memory access class. the identity/continuation
@@ -1294,10 +1295,13 @@ int main(int argc, char** argv)
   assert(((val >> 17) & 0x7f) == 0x3b);
   assert(((val >> 24) & 0x0f) == 0x04);
 
-  /* the k20 has an mdm ap w/ stuff like mass erase and more debug control. */
+  /* the k20 has an mdm ap w/ stuff like mass erase and more debug control.
+   * otherwise, the code is zero if it isn't supported.
+   */
   opt = swd_ap_idcode(pins, 1, &val);
   assert(opt == 0);
   printf("%s:%d: mdm-ap idr:%08x\n", __func__, __LINE__, val);
+  if (val != 0) {
   assert(val == 0x001c0000);
 
   /* mdm ap debug overides the dhcsr setting, and security enabled
@@ -1347,12 +1351,16 @@ erase_fail:
     opt = ez_reset(pins);
     assert(opt == 0);
   }
+  }
 
   /* it doesn't matter about the cpuid, but it's informational */
   opt = swd_ap_mem_read_u32(pins, 0, REG_CPUID, &val);
   assert(opt == 0);
   printf("%s:%d: cpuid:%08x\n", __func__, __LINE__, val);
-  assert(((val >> 4) & 0x0fff) == 0x0c24); /* cortex-m4 */
+  assert((((val >> 4) & 0x0fff) == 0x0c23) || /* cortex-m3 */
+         (((val >> 4) & 0x0fff) == 0x0c24));  /* cortex-m4 */
+  assert(((val >> 16) & 0x0f) == 0xf); /* reserved */
+  assert(((val >> 24) & 0xff) == 0x41); /* arm */
 
   /* we have to halt the processor to do anything, but we either do a
    * system reset or stop it where it's at. by default we just stop
@@ -1377,13 +1385,13 @@ erase_fail:
 opt = swd_ap_mem_read_u32(pins, 0, REG_DHCSR, &val);
 assert(opt == 0);
 dump_regs(pins);
-assert(0);
  for (int i = 0; i < 8; i++) {
 opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 2) | (1 << 0));
 assert(opt == 0);
 idle(pins);
  }
 dump_regs(pins);
+assert(0);
 
   if (mem_nb > 0)
     ftfl_mem_read(pins, mem_addr, mem_nb, f_out);
