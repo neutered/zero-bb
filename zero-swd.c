@@ -1307,15 +1307,17 @@ int main(int argc, char** argv)
   assert(opt == 0);
   printf("%s:%d: mdm-ap status:%08x\n", __func__, __LINE__, val);
   assert(val & (1 << 5));
-  if (val & (1 << 2)) {
+  while (val & (1 << 2)) {
     opt = swd_ap_read(pins, 1, 0x04, &val);
     assert(opt == 0);
     printf("%s:%d: mdm-ap control:%08x\n", __func__, __LINE__, val);
+// erase already outstanding?
 // assert(!(val & 0x01));
-
+#if 0
     opt = swd_ap_write(pins, 1, 0x04, val | 0x01);
     assert(opt == 0);
 
+    /* wait for the erase to be accepted */
     int i;
     for (i = 0; i < 6; i++) {
     opt = swd_ap_read(pins, 1, 0x00, &val);
@@ -1324,9 +1326,11 @@ int main(int argc, char** argv)
     if (val & (1 << 0)) break;
 sleep(10);
     }
-assert(val & (1 << 0));
+    if (!(val & (1 << 0)))
+      goto erase_fail;
     printf("\nerase ack:%d\n", i);
 
+    /* wait for the erase */
     for (i = 0; i < 6; i++) {
       opt = swd_ap_read(pins, 1, 0x04, &val);
       assert(opt == 0);
@@ -1334,10 +1338,14 @@ printf("%s:%d: mdm-ap control:%08x\n", __func__, __LINE__, val);
 if (!(val & (1 << 0))) break;
 sleep(10);
     }
-assert(!(val & (1 << 0)));
+    if (val & (1 << 0))
+      goto erase_fail;
     printf("\nerase:%d\n", i);
-
-    assert(0);
+    break;
+erase_fail:
+#endif
+    opt = ez_reset(pins);
+    assert(opt == 0);
   }
 
   /* it doesn't matter about the cpuid, but it's informational */

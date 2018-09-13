@@ -6,7 +6,7 @@ AR=$(PATH_PREFIX)/$(PREFIX)-ar
 CC=$(PATH_PREFIX)/$(PREFIX)-gcc
 LD=$(PATH_PREFIX)/$(PREFIX)-ld
 
-CFLAGS=-Wall -g
+CFLAGS=-Wall -g -DPIN_EZ=0
 
 PROGS=zero-test zero-swd
 LIBS=libpin.a
