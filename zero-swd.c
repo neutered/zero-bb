@@ -399,11 +399,11 @@ static void dump_reg_aircr(const char* label, uint32_t val)
   dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
-static void hexdump(const char* tag, const uint8_t* bs, size_t nb)
+static void hexdump(const char* tag, uint64_t cont_addr, const uint8_t* bs, size_t nb)
 {
   assert(strlen(tag) > 0);
   for (int i = 0; i < nb; i += 16) {
-    fprintf(stderr, "%s %04x:", tag, i);
+    fprintf(stderr, "%s %08llx : ", tag, cont_addr + i);
     for (int j = 0; j < 16 && i + j < nb; j++)
       fprintf(stderr, "%02x ", bs[i + j]);
     fprintf(stderr, "\n");
@@ -430,7 +430,7 @@ label_addr:
     else
       sprintf(backing, "%08x", (uint32_t)addr);
   }
-  hexdump(label, bs, nb);
+  hexdump(label, addr, bs, nb);
   if (reg)
     (*reg)(label, *(uint32_t*)bs);
 }
@@ -1014,7 +1014,7 @@ static int ftfl_mem_read(struct pinctl* c, uint64_t addr, size_t nb, const char*
     rv = swd_ap_mem_read(c, 0, addr, bs, n);
     if (rv) goto err_exit;
     if (fd == -1) {
-      hexdump("mem", bs, n);
+      hexdump("mem", addr, bs, n);
     } else {
       fputc('r', stdout);
       write(fd, bs, n);
