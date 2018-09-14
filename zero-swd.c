@@ -1225,6 +1225,10 @@ int main(int argc, char** argv)
         assert(*end == 0);
       assert((mem_nb & 0x03) == 0);
       break;
+    case 's':
+    case 'S':
+      sysreset = opt == 'S';
+      break;
     case 'v':
       verbose++;
       break;
