@@ -300,24 +300,6 @@ static void dump_dp_idcode(uint32_t val)
   dump_reg(__func__, "dp_idcode", fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
-static void dump_ap_status(uint32_t status)
-{
-  static const struct port_field_desc fields[] = {
-    { 31, 31, "dbgswenable" },
-    { 30, 24, "prot" },
-    { 23, 23, "spiden" },
-    { 22, 16, "res0" },
-    { 15, 12, "type" },
-    { 11, 8, "mode" },
-    { 7, 7, "trinprog" },
-    { 6, 6, "deviceen" },
-    { 5, 4, "addrinc" },
-    { 3, 3, "res1" },
-    { 2, 0, "size" },
-  };
-  dump_reg(__func__, "ap_status", fields, sizeof(fields) / sizeof(fields[0]), status);
-}
-
 static void dump_ap_idcode(uint32_t idcode)
 {
   static const struct port_field_desc fields[] = {
