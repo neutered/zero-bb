@@ -19,17 +19,21 @@
 #define REG_DP_SELECT 0x08
 #define REG_DP_RDBUFF 0x0c
 
+/* dp status register fields */
+#define CSYSPWRUPACK (1 << 31)
+#define CSYSPWRUPREQ (1 << 30)
+#define CDBGPWRUPACK (1 << 29)
+#define CDBGPWRUPREQ (1 << 28)
+#define CDBGRSTACK (1 << 27)
+#define CDBGRSTREQ (1 << 26)
+#define WDATAERR (1 << 7)
+#define READOK (1 << 6)
+#define STICKYERR (1 << 5)
+#define STICKYCMP (1 << 4)
+#define STICKYORUN (1 << 1)
+#define ORUNDETECT (1 << 0)
+
 #define REG_AP_IDR 0xfc
-
-#define REG_CPUID 0xe000ed00
-#define REG_AIRCR 0xe000ed0c
-#define REG_DFSR  0xe000ed30
-#define REG_DHCSR 0xe000edf0
-#define REG_DCRSR 0xe000edf4
-#define REG_DCRDR 0xe000edf8
-#define REG_DEMCR 0xe000edfc
-
-#define REG_FTFL_STAT 0x40020000
 
 #define REG_AP_MEM_CSW 0x00
 #define REG_AP_MEM_TAR_LO 0x04
@@ -44,18 +48,16 @@
 #define REG_AP_MEM_CFG 0xf4
 #define REG_AP_MEM_BASE_LO 0xf8
 
-#define CSYSPWRUPACK (1 << 31)
-#define CSYSPWRUPREQ (1 << 30)
-#define CDBGPWRUPACK (1 << 29)
-#define CDBGPWRUPREQ (1 << 28)
-#define CDBGRSTACK (1 << 27)
-#define CDBGRSTREQ (1 << 26)
-#define WDATAERR (1 << 7)
-#define READOK (1 << 6)
-#define STICKYERR (1 << 5)
-#define STICKYCMP (1 << 4)
-#define STICKYORUN (1 << 1)
-#define ORUNDETECT (1 << 0)
+/* arm 'memory mapped' registers */
+#define REG_CPUID 0xe000ed00
+#define REG_AIRCR 0xe000ed0c
+#define REG_DFSR  0xe000ed30
+#define REG_DHCSR 0xe000edf0
+#define REG_DCRSR 0xe000edf4
+#define REG_DCRDR 0xe000edf8
+#define REG_DEMCR 0xe000edfc
+
+#define REG_FTFL_STAT 0x40020000
 
 static int verbose;
 
@@ -191,7 +193,7 @@ static int swd_handle_fail(struct pinctl* c)
   uint32_t val;
   int rv = swd_status(c, &val, 1);
   assert(rv == 0);
-fprintf(stderr, "%s:%d: status:%08x\n", __func__, __LINE__, val);
+  fprintf(stderr, "%s:%d: status:%08x\n", __func__, __LINE__, val);
   /* sticky errors? */
   uint32_t reg = 0x01;
   assert((val & 0xb2) != 0);
@@ -466,17 +468,17 @@ err_exit:
 
 static int swd_ap_select(struct pinctl* c, uint8_t sel, uint8_t bank)
 {
-static uint8_t prev_sel = -1;
-static uint8_t prev_bank = -1;
-if (verbose > 2)
-fprintf(stderr, "%s:%d: sel:%02x bank:%02x\n", __func__, __LINE__, sel, bank);
-if (prev_sel == sel && prev_bank == bank) {
-if (verbose > 2)
-fprintf(stderr, "%s:%d: repeat ap sel:%02x bank:%02x\n", __func__, __LINE__, sel, bank);
-return 0;
-}
-prev_sel = sel;
-prev_bank = bank;
+  static uint8_t prev_sel = -1;
+  static uint8_t prev_bank = -1;
+  if (verbose > 2)
+    fprintf(stderr, "%s:%d: sel:%02x bank:%02x\n", __func__, __LINE__, sel, bank);
+  if (prev_sel == sel && prev_bank == bank) {
+    if (verbose > 2)
+      fprintf(stderr, "%s:%d: repeat ap sel:%02x bank:%02x\n", __func__, __LINE__, sel, bank);
+    return 0;
+  }
+  prev_sel = sel;
+  prev_bank = bank;
   uint32_t val = (sel << 24) | (bank << 4);
   return swd_write(c, 0, REG_DP_SELECT, val);
 }
@@ -718,7 +720,7 @@ static int swd_ap_mem_write_u32(struct pinctl* c, int ap, uint64_t addr, const u
   return swd_ap_mem_write(c, 0, addr, (uint8_t*)&val, sizeof(val));
 }
 
-/*  ftfl registers are (oddly) 8-bit, but the swd bits seem happier w/
+/* ftfl registers are (oddly) 8-bit, but the swd bits seem happier w/
  * 32-bit accesses (ie, always returning the word even when the config
  * is set for 8-bit accesses).
  *
@@ -1364,15 +1366,6 @@ erase_fail:
    * the processor.
    */
   opt = swd_halt(pins, sysreset);
-
-dump_regs(pins);
- for (int i = 0; i < 8; i++) {
-opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 2) | (1 << 0));
-assert(opt == 0);
-idle(pins);
- }
-dump_regs(pins);
-assert(0);
 
   if (mem_nb > 0)
     ftfl_mem_read(pins, mem_addr, mem_nb, f_out);
