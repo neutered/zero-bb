@@ -1175,7 +1175,7 @@ int main(int argc, char** argv)
   const char* f_out = NULL;
   const char* f_verify = NULL;
   int sysreset = 0;
-  unsigned n_instr = 0;
+  int n_instr = -1;
 
   while ((opt = getopt(argc, argv, "c:n:o:p:r:sSv")) != -1) {
     char* end;
@@ -1354,13 +1354,14 @@ erase_fail:
    */
   opt = swd_halt(pins, sysreset);
 
-  if (n_instr) {
-dump_regs(pins);
- for (int i = 0; i < n_instr; i++) {
+  if (n_instr >= 0) {
+    if (n_instr > 0)
+      dump_regs(pins);
+for (int i = 0; i < n_instr; i++) {
 opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 2) | (1 << 0));
 assert(opt == 0);
 idle(pins);
- }
+}
 dump_regs(pins);
   }
 
