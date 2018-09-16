@@ -1105,7 +1105,7 @@ static int swd_halt(struct pinctl* c, int sysreset)
     fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
 
   /* enable debug before going to doing any fiddling w/ sysreset */
-  if (!(val & ((1 << 17) | (1 << 0)))) {
+  if ((val & ((1 << 17) | (1 << 0))) != ((1 << 17) | (1 << 0))) {
     /* halt and enable debug */
     err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0));
     assert(err == 0);
