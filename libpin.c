@@ -19,11 +19,17 @@
 #define PIN_CLOCK 20
 #define PIN_DATA 21
 
+/* both signals are active low
+ *  external - goes to a fet off the gpio to get a hard power-on reset
+ *  reset - goes to the actual pin for soft reset
+ */
+#define PIN_RESET 16
+#define PIN_EXT_POR 18
+
 /* ez port defines */
-#define PIN_RESET  18
-#define PIN_EZ_CS  23
-#define PIN_EZ_DO  24
-#define PIN_EZ_DI  25
+#define PIN_EZ_CS 23
+#define PIN_EZ_DO 24
+#define PIN_EZ_DI 25
 
 /* for experimenting w/ the swd data line */
 #define PIN_HIZ_DATA 1
@@ -134,9 +140,15 @@ struct pinctl* pins_open(unsigned phase)
    * separate from the ezport (except for checking ez cs at reset
    * time), so is outside of that config.
    */
+  PIN_CONFIG_HIZ(rv->regs, PIN_EXT_POR, 1);
+  PIN_DIR(rv->regs, PIN_EXT_POR, 1);
+  PIN_WRITE(rv->regs, PIN_EXT_POR, 0);
+
+  /* the reset pin has a chip-internal pull-up, but wwhen we wait to
+   * come out of reset.
+   */
   PIN_CONFIG_HIZ(rv->regs, PIN_RESET, 1);
-  PIN_DIR(rv->regs, PIN_RESET, 1);
-  PIN_WRITE(rv->regs, PIN_RESET, 0);
+  PIN_DIR(rv->regs, PIN_RESET, 0);
 
 #if PIN_EZ
   PIN_CONFIG_HIZ(rv->regs, PIN_EZ_CS, 1);
@@ -156,9 +168,9 @@ ez_reset(rv);
 
 #if 0
 usleep(200000);
-  PIN_WRITE(rv->regs, PIN_RESET, 1);
+  PIN_WRITE(rv->regs, PIN_EXT_POR, 1);
 usleep(200000);
-  PIN_WRITE(rv->regs, PIN_RESET, 0);
+  PIN_WRITE(rv->regs, PIN_EXT_POR, 0);
 usleep(200000);
 // assert(0);
   #endif
@@ -271,15 +283,47 @@ PIN_DIR(c->regs, PIN_EZ_DI, 0);
   return nb;
 }
 
+int pins_reset(struct pinctl* c, int external)
+{
+  /* drop all the outputs so that we don't 'power' the target. */
+  PIN_WRITE(c->regs, PIN_CLOCK, 0);
+  PIN_WRITE(c->regs, PIN_DATA, 0);
+
+  if (external) {
+    PIN_WRITE(c->regs, PIN_EXT_POR, 1);
+    usleep(1000000);
+    PIN_WRITE(c->regs, PIN_EXT_POR, 0);
+
+    PIN_DIR(c->regs, PIN_RESET, 0);
+    int i, v;
+    for (i = 0, v = PIN_READ(c->regs, PIN_RESET); !v; i++, v = PIN_READ(c->regs, PIN_RESET))
+      usleep(1000);
+    fprintf(stderr, "%s:%d: n:%dms\n", __func__, __LINE__, i);
+  } else {
+    PIN_WRITE(c->regs, PIN_RESET, 0);
+    PIN_DIR(c->regs, PIN_RESET, 1);
+    usleep(1000);
+  }
+
+  /* wait for reset to release */
+  PIN_DIR(c->regs, PIN_RESET, 0);
+  int i, v;
+  for (i = 0, v = PIN_READ(c->regs, PIN_RESET); !v; i++, v = PIN_READ(c->regs, PIN_RESET))
+    usleep(1000);
+  fprintf(stderr, "%s:%d: reset release %dms\n", __func__, __LINE__, i);
+
+  return 0;
+}
+
 int ez_reset(struct pinctl* c)
 {
 #if !PIN_EZ
-  assert(0);
+// assert(0);
 #endif
 
   /* drop all the outputs so that we don't 'power' the target. */
-PIN_WRITE(c->regs, PIN_CLOCK, 0);
-PIN_WRITE(c->regs, PIN_DATA, 0);
+  PIN_WRITE(c->regs, PIN_CLOCK, 0);
+  PIN_WRITE(c->regs, PIN_DATA, 0);
 
   /* enable ezport cs so that when we toggle power it's waiting */
   PIN_WRITE(c->regs, PIN_EZ_CS, 0);
@@ -289,9 +333,9 @@ usleep(10000);
    * programmatic control if we're coming through here (eg, security
    * is enabled).
    */
-  PIN_WRITE(c->regs, PIN_RESET, 1);
+  PIN_WRITE(c->regs, PIN_EXT_POR, 1);
 usleep(100000);
-  PIN_WRITE(c->regs, PIN_RESET, 0);
+  PIN_WRITE(c->regs, PIN_EXT_POR, 0);
 usleep(100000);
 PIN_WRITE(c->regs, PIN_EZ_CS, 1);
 usleep(10000);
@@ -309,7 +353,7 @@ usleep(10000);
   ez_read(c, bs, sizeof(bs));
   fprintf(stderr, "%s:%d: status:%02x\n", __func__, __LINE__, bs[0]);
 
-assert(0);
+// assert(0);
 
   return !!(bs[0] & (1 << 7));
 }

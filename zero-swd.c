@@ -1174,10 +1174,11 @@ int main(int argc, char** argv)
   uint32_t mem_nb = 0;
   const char* f_out = NULL;
   const char* f_verify = NULL;
+  int ext_power_cycle = -1;
   int sysreset = 0;
   int n_instr = -1;
 
-  while ((opt = getopt(argc, argv, "c:n:o:p:r:sSv")) != -1) {
+  while ((opt = getopt(argc, argv, "c:n:o:p:r:sSvxX")) != -1) {
     char* end;
 
     switch (opt) {
@@ -1230,6 +1231,10 @@ int main(int argc, char** argv)
     case 'S':
       sysreset = opt == 'S';
       break;
+    case 'x':
+    case 'X':
+      ext_power_cycle = opt == 'X';
+      break;
     case 'v':
       verbose++;
       break;
@@ -1241,6 +1246,9 @@ int main(int argc, char** argv)
 
   struct pinctl* pins = pins_open(phase);
   if (!pins) goto err_exit;
+
+  if (ext_power_cycle >= 0)
+    pins_reset(pins, ext_power_cycle);
 
   /* reset-y bits for the debug port */
   resync(pins, 0);
