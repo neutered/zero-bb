@@ -1084,7 +1084,7 @@ printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel]
   }
 }
 
-static void swd_continue(struct pinctl* c)
+static int swd_continue(struct pinctl* c)
 {
   int rv = -1;
 
@@ -1119,7 +1119,7 @@ static void swd_continue(struct pinctl* c)
   rv = (val & (1 << 17));
 
 done:
-  exit(rv);
+  return rv;
 }
 
 /* returns EBUSY if teh target appears to be stuck in reset.
@@ -1290,6 +1290,7 @@ int main(int argc, char** argv)
   struct pinctl* pins = pins_open(phase);
   if (!pins) goto err_exit;
 
+  /* external reset/power-on-reset handling */
   if (ext_power_cycle >= 0)
     pins_reset(pins, ext_power_cycle);
 
@@ -1403,10 +1404,11 @@ erase_fail:
   if (syscontinue)
     swd_continue(pins);
 
-  /* otherwise, we have to halt the processor to do anything, but we
-   * either do a system reset or stop it where it's at. by default we
-   * just stop the processor.
+  /* if we have other commands to do, we have to halt the processor to
+   * do anything, but skip all of this if there aren't any commands.
    */
+  if ((n_instr < 0) && !mem_nb && !f_verify)
+    goto done;
   swd_halt(pins, sysreset);
 
   if (n_instr >= 0) {
@@ -1425,6 +1427,7 @@ dump_regs(pins);
   if (f_verify != NULL)
     ftfl_flash_verify(pins, f_verify);
 
+done:
   rv = EXIT_SUCCESS;
 err_exit:
   pins_close(pins);
