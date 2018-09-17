@@ -1263,6 +1263,7 @@ int main(int argc, char** argv)
       optarg = end + 1;
       mem_nb = strtoul(optarg, &end, 0);
       assert(end != optarg);
+      assert(mem_nb > 0);
       if (strcmp("k", end) == 0)
         mem_nb *= 1024;
       else if (strcmp("M", end) == 0)
