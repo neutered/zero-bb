@@ -1231,7 +1231,7 @@ int main(int argc, char** argv)
       break;
     case 'n':
       n_instr = strtoul(optarg, &end, 0);
-      assert(end != optarg);
+      assert(end != optarg && *end == 0);
       break;
     case 'o':
       f_out = optarg;
