@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1083,6 +1084,44 @@ printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel]
   }
 }
 
+static void swd_continue(struct pinctl* c)
+{
+  int rv = -1;
+
+  /* if we're not halted or w/ debug enabled then there's nothing we
+   * can do, but it was an error to come here at all w/o debug enabled.
+   */
+  uint32_t val;
+  int err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+  assert(err == 0);
+  if (verbose)
+    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+
+  /* if debug isn't enabled then we shouldn't be halted? */
+  assert((val & (1 << 0)) || ((val & (1 << 17)) == 0));
+
+  /* if we're not halted then all is good */
+  rv = (val & (1 << 17));
+  if (!rv) {
+    printf("%s:%d: dhcsr:%08x not halted\n", __func__, __LINE__, val);
+    goto done;
+  }
+
+  /* clearing dbeug should be sufficient */
+  err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (val & ~(0xffff0000 | (1 << 1) | (1 << 0))) | (0xa05f << 16));
+  assert(err == 0);
+
+  /* double check */
+  err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+  assert(err == 0);
+  if (verbose)
+    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
+  rv = (val & (1 << 17));
+
+done:
+  exit(rv);
+}
+
 /* returns EBUSY if teh target appears to be stuck in reset.
  */
 static int swd_halt(struct pinctl* c, int sysreset)
@@ -1176,14 +1215,19 @@ int main(int argc, char** argv)
   const char* f_verify = NULL;
   int ext_power_cycle = -1;
   int sysreset = 0;
+  int syscontinue = 0;
   int n_instr = -1;
 
-  while ((opt = getopt(argc, argv, "c:n:o:p:r:sSvxX")) != -1) {
+  while ((opt = getopt(argc, argv, "chHn:o:p:r:vV:xX")) != -1) {
     char* end;
 
     switch (opt) {
     case 'c':
-      f_verify = optarg;
+      syscontinue = 1;
+      break;
+    case 'h':
+    case 'H':
+      sysreset = isupper(opt);
       break;
     case 'n':
       n_instr = strtoul(optarg, &end, 0);
@@ -1227,13 +1271,12 @@ int main(int argc, char** argv)
         assert(*end == 0);
       assert((mem_nb & 0x03) == 0);
       break;
-    case 's':
-    case 'S':
-      sysreset = opt == 'S';
+    case 'V':
+      f_verify = optarg;
       break;
     case 'x':
     case 'X':
-      ext_power_cycle = opt == 'X';
+      ext_power_cycle = isupper(opt);
       break;
     case 'v':
       verbose++;
@@ -1356,11 +1399,15 @@ erase_fail:
   assert(((val >> 16) & 0x0f) == 0xf); /* reserved */
   assert(((val >> 24) & 0xff) == 0x41); /* arm */
 
-  /* we have to halt the processor to do anything, but we either do a
-   * system reset or stop it where it's at. by default we just stop
-   * the processor.
+  /* did we previously halt things? if we're releasing, then we're done here. */
+  if (syscontinue)
+    swd_continue(pins);
+
+  /* otherwise, we have to halt the processor to do anything, but we
+   * either do a system reset or stop it where it's at. by default we
+   * just stop the processor.
    */
-  opt = swd_halt(pins, sysreset);
+  swd_halt(pins, sysreset);
 
   if (n_instr >= 0) {
     if (n_instr > 0)
