@@ -1210,7 +1210,7 @@ int main(int argc, char** argv)
   unsigned phase = 500; /* us */
   int opt;
   uint64_t mem_addr;
-  uint32_t mem_nb = 0;
+  uint32_t mem_read_nb = 0;
   const char* f_out = NULL;
   const char* f_verify = NULL;
   int ext_power_cycle = -1;
@@ -1256,21 +1256,21 @@ int main(int argc, char** argv)
       assert(end != optarg);
       assert((mem_addr & 0x03) == 0);
       if (*end == '\0') {
-        mem_nb = 0x100;
+        mem_read_nb = 0x100;
         break;
       }
       assert(*end == ':');
       optarg = end + 1;
-      mem_nb = strtoul(optarg, &end, 0);
+      mem_read_nb = strtoul(optarg, &end, 0);
       assert(end != optarg);
-      assert(mem_nb > 0);
+      assert(mem_read_nb > 0);
       if (strcmp("k", end) == 0)
-        mem_nb *= 1024;
+        mem_read_nb *= 1024;
       else if (strcmp("M", end) == 0)
-        mem_nb *= (1024 * 1024);
+        mem_read_nb *= (1024 * 1024);
       else
         assert(*end == 0);
-      assert((mem_nb & 0x03) == 0);
+      assert((mem_read_nb & 0x03) == 0);
       break;
     case 'V':
       f_verify = optarg;
@@ -1408,7 +1408,7 @@ erase_fail:
   /* if we have other commands to do, we have to halt the processor to
    * do anything, but skip all of this if there aren't any commands.
    */
-  if ((n_instr < 0) && !mem_nb && !f_verify)
+  if ((n_instr < 0) && !mem_read_nb && !f_verify)
     goto done;
   swd_halt(pins, sysreset);
 
@@ -1423,8 +1423,8 @@ idle(pins);
 dump_regs(pins);
   }
 
-  if (mem_nb > 0)
-    ftfl_mem_read(pins, mem_addr, mem_nb, f_out);
+  if (mem_read_nb > 0)
+    ftfl_mem_read(pins, mem_addr, mem_read_nb, f_out);
   if (f_verify != NULL)
     ftfl_flash_verify(pins, f_verify);
 
