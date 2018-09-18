@@ -63,10 +63,10 @@
 struct memdesc {
   uint64_t addr;
   union {
-  uint32_t val;
-  size_t nb;
-  const char* path;
+    uint32_t val;
+    size_t nb;
   };
+  const char* path;
 };
 
 static struct {
@@ -1040,6 +1040,19 @@ err_exit:
   return rv;
 }
 
+static int ftfl_mem_write(struct pinctl* c, struct memdesc* mems, unsigned n_mems)
+{
+  int err = 0;
+  for (int i = 0; i < n_mems; i++) {
+    /* FixMe: doesn't handle files or flash yet */
+    assert(!(mems[i].addr & 0x01));
+    err = swd_ap_mem_write_u32(c, 0, mems[i].addr, mems[i].val);
+    assert(err == 0);
+    if (err) break;
+  }
+  return err;
+}
+
 static int ftfl_mem_read(struct pinctl* c, struct memdesc* mems, unsigned n_mems)
 {
   int rv = 0;
@@ -1279,13 +1292,15 @@ int main(int argc, char** argv)
   int n_reg_writes = 0;
   struct memdesc* mem_reads = NULL;
   int n_mem_reads = 0;
+  struct memdesc* mem_writes = NULL;
+  int n_mem_writes = 0;
   const char* f_verify = NULL;
   int ext_power_cycle = -1;
   int sysreset = 0;
   int syscontinue = 0;
   int n_instr = -1;
 
-  while ((opt = getopt(argc, argv, "cg:hHn:p:r:vV:xX")) != -1) {
+  while ((opt = getopt(argc, argv, "cg:hHn:p:r:vV:w:xX")) != -1) {
     char* end;
 
     switch (opt) {
@@ -1307,6 +1322,7 @@ int main(int argc, char** argv)
       void* p = realloc(*a, sizeof(struct memdesc) * (*n + 1));
       assert(p != NULL);
       *a = p;
+      memset(*a + *n, 0, sizeof(*a));
       (*a)[*n].addr = sel;
       if (w) (*a)[*n].val = val;
       (*n) += 1;
@@ -1362,6 +1378,7 @@ int main(int argc, char** argv)
         void* p = realloc(mem_reads, sizeof(mem_reads[0]) * (n_mem_reads + 1));
         if (!p) break;
         mem_reads = p;
+        memset(mem_reads + n_mem_reads, 0, sizeof(mem_reads[0]));
         mem_reads[n_mem_reads].addr = addr;
         mem_reads[n_mem_reads].nb = nb;
         mem_reads[n_mem_reads].path = path;
@@ -1378,7 +1395,32 @@ int main(int argc, char** argv)
     case 'v':
       verbose++;
       break;
-
+    case 'w': {
+        uint64_t addr = strtoull(optarg, &end, 0);
+        assert(end != optarg);
+        assert((addr & 0x03) == 0);
+        optarg = end + 1;
+        void* p = realloc(mem_writes, sizeof(mem_writes[0]) * (n_mem_writes + 1));
+        if (!p) break;
+        mem_writes = p;
+        memset(mem_writes + n_mem_writes, 0, sizeof(mem_writes[0]));
+        mem_writes[n_mem_writes].addr = addr;
+        switch (*end) {
+        case ':':
+          mem_writes[n_mem_writes].val = strtoul(optarg, &end, 0);
+          assert(end != optarg);
+          assert(*end == 0);
+          break;
+        case '-':
+          assert(*optarg != 0);
+          mem_writes[n_mem_writes].path = optarg;
+          break;
+        default:
+          assert(*end == ':' || *end == '-');
+        }
+        n_mem_writes++;
+      }
+      break;
     default:
       assert(0);
     }
@@ -1503,7 +1545,10 @@ erase_fail:
   /* if we have other commands to do, we have to halt the processor to
    * do anything, but skip all of this if there aren't any commands.
    */
-  if ((n_instr < 0) && !n_mem_reads && !n_reg_reads && !n_reg_writes && !f_verify)
+  if ((n_instr < 0) &&
+      !n_mem_reads && !n_mem_writes &&
+      !n_reg_reads && !n_reg_writes &&
+      !f_verify)
     goto done;
   swd_halt(pins, sysreset);
 
@@ -1511,6 +1556,8 @@ erase_fail:
     write_reg(pins, reg_writes + i);
   for (int i = 0; i < n_reg_reads; i++)
     dump_reg(pins, reg_reads[i].addr);
+  if (n_mem_writes > 0)
+    ftfl_mem_write(pins, mem_writes, n_mem_writes);
   if (n_mem_reads > 0)
     ftfl_mem_read(pins, mem_reads, n_mem_reads);
   if (f_verify != NULL)
