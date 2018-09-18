@@ -60,6 +60,12 @@
 
 #define REG_FTFL_STAT 0x40020000
 
+struct mem {
+  uint64_t addr;
+  uint32_t nb;
+  const char* path;
+};
+
 static int verbose;
 
 /* if dump | verbose parse status register bits */
@@ -995,21 +1001,30 @@ err_exit:
   return rv;
 }
 
-static int ftfl_mem_read(struct pinctl* c, uint64_t addr, size_t nb, const char* path)
+static int ftfl_mem_read(struct pinctl* c, struct mem* mems, unsigned n_mems)
 {
   int rv = 0;
-  int fd  = -1;
 
+  uint8_t bs[256];
+  for (int i = 0; i < n_mems; i++) {
+    const char* path = mems[i].path;
+
+  int fd = -1;
   if (path) {
+    if (strcmp(path, "-") == 0) {
+      fd = STDOUT_FILENO;
+    } else {
     fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd == -1) {
       fprintf(stderr, "%s:%d: output(%s) failed:%d:%s\n", __func__, __LINE__, path, errno, strerror(errno));
       rv = errno;
       goto err_exit;
     }
+    }
   }
 
-  uint8_t bs[256];
+    uint64_t addr = mems[i].addr;
+    uint32_t nb = mems[i].nb;
   while (nb > 0) {
     uint32_t n = min(nb, sizeof(bs));
     rv = swd_ap_mem_read(c, 0, addr, bs, n);
@@ -1024,13 +1039,15 @@ static int ftfl_mem_read(struct pinctl* c, uint64_t addr, size_t nb, const char*
     nb -= n;
   }
 
-err_exit:
-  if (fd != -1) {
+  if (fd != -1 && fd != STDOUT_FILENO) {
     fputc('\n', stdout);
     fflush(stdout);
 
     close(fd);
   }
+  }
+
+err_exit:
   return rv;
 }
 
@@ -1209,16 +1226,15 @@ int main(int argc, char** argv)
   int rv = EXIT_FAILURE;
   unsigned phase = 500; /* us */
   int opt;
-  uint64_t mem_addr;
-  uint32_t mem_read_nb = 0;
-  const char* f_out = NULL;
+  struct mem *mem_reads = NULL;
+  int n_mem_reads = 0;
   const char* f_verify = NULL;
   int ext_power_cycle = -1;
   int sysreset = 0;
   int syscontinue = 0;
   int n_instr = -1;
 
-  while ((opt = getopt(argc, argv, "chHn:o:p:r:vV:xX")) != -1) {
+  while ((opt = getopt(argc, argv, "chHn:p:r:vV:xX")) != -1) {
     char* end;
 
     switch (opt) {
@@ -1232,9 +1248,6 @@ int main(int argc, char** argv)
     case 'n':
       n_instr = strtoul(optarg, &end, 0);
       assert(end != optarg && *end == 0);
-      break;
-    case 'o':
-      f_out = optarg;
       break;
     case 'p':
       phase = strtoul(optarg, &end, 0);
@@ -1251,26 +1264,38 @@ int main(int argc, char** argv)
         assert((*end == '\0') || (strcmp("us", end) == 0));
       assert(phase > 0);
       break;
-    case 'r':
-      mem_addr = strtoull(optarg, &end, 0);
+    case 'r': {
+      uint64_t addr = strtoull(optarg, &end, 0);
+      uint32_t nb = 16;
+      char* path = NULL;
       assert(end != optarg);
-      assert((mem_addr & 0x03) == 0);
-      if (*end == '\0') {
-        mem_read_nb = 0x100;
-        break;
-      }
-      assert(*end == ':');
+      assert((addr & 0x03) == 0);
+      if (*end == ':') {
       optarg = end + 1;
-      mem_read_nb = strtoul(optarg, &end, 0);
+      nb = strtoul(optarg, &end, 0);
       assert(end != optarg);
-      assert(mem_read_nb > 0);
+      assert(nb > 0);
       if (strcmp("k", end) == 0)
-        mem_read_nb *= 1024;
+        nb *= 1024;
       else if (strcmp("M", end) == 0)
-        mem_read_nb *= (1024 * 1024);
+        nb *= (1024 * 1024);
       else
         assert(*end == 0);
-      assert((mem_read_nb & 0x03) == 0);
+      }
+      assert((nb & 0x03) == 0);
+
+      if (*end == ':')
+        path = end + 1;
+      assert(path == NULL || *path != 0);
+
+      void* p = realloc(mem_reads, sizeof(mem_reads[0]) * (n_mem_reads + 1));
+      if (!p) break;
+      mem_reads = p;
+      mem_reads[n_mem_reads].addr = addr;
+      mem_reads[n_mem_reads].nb = nb;
+      mem_reads[n_mem_reads].path = path;
+      n_mem_reads++;
+      }
       break;
     case 'V':
       f_verify = optarg;
@@ -1408,7 +1433,7 @@ erase_fail:
   /* if we have other commands to do, we have to halt the processor to
    * do anything, but skip all of this if there aren't any commands.
    */
-  if ((n_instr < 0) && !mem_read_nb && !f_verify)
+  if ((n_instr < 0) && !n_mem_reads && !f_verify)
     goto done;
   swd_halt(pins, sysreset);
 
@@ -1423,14 +1448,15 @@ idle(pins);
 dump_regs(pins);
   }
 
-  if (mem_read_nb > 0)
-    ftfl_mem_read(pins, mem_addr, mem_read_nb, f_out);
+  if (n_mem_reads > 0)
+    ftfl_mem_read(pins, mem_reads, n_mem_reads);
   if (f_verify != NULL)
     ftfl_flash_verify(pins, f_verify);
 
 done:
   rv = EXIT_SUCCESS;
 err_exit:
+  free(mem_reads);
   pins_close(pins);
   return rv;
 }
