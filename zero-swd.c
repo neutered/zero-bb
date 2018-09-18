@@ -61,6 +61,9 @@
 #define REG_FTFL_STAT 0x40020000
 
 struct memdesc {
+#define DESC_WRITE (1 << 0)
+#define DESC_PATH  (1 << 1)
+  uint32_t flags;
   uint64_t addr;
   union {
     uint32_t val;
@@ -1040,63 +1043,52 @@ err_exit:
   return rv;
 }
 
-static int ftfl_mem_write(struct pinctl* c, struct memdesc* mems, unsigned n_mems)
+static int ftfl_mem_write(struct pinctl* c, const struct memdesc* m)
 {
-  int err = 0;
-  for (int i = 0; i < n_mems; i++) {
-    /* FixMe: doesn't handle files or flash yet */
-    assert(!(mems[i].addr & 0x01));
-    err = swd_ap_mem_write_u32(c, 0, mems[i].addr, mems[i].val);
-    assert(err == 0);
-    if (err) break;
-  }
-  return err;
+  /* FixMe: doesn't handle files or flash yet */
+  return swd_ap_mem_write_u32(c, 0, m->addr, m->val);
 }
 
-static int ftfl_mem_read(struct pinctl* c, struct memdesc* mems, unsigned n_mems)
+static int ftfl_mem_read(struct pinctl* c, const struct memdesc* m)
 {
   int rv = 0;
 
   uint8_t bs[256];
-  for (int i = 0; i < n_mems; i++) {
-    const char* path = mems[i].path;
-
-    int fd = -1;
-    if (path) {
-      if (strcmp(path, "-") == 0) {
-        fd = STDOUT_FILENO;
-      } else {
-        fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-        if (fd == -1) {
-          fprintf(stderr, "%s:%d: output(%s) failed:%d:%s\n", __func__, __LINE__, path, errno, strerror(errno));
-          rv = errno;
-          goto err_exit;
-        }
-      }
-    }
-
-    uint64_t addr = mems[i].addr;
-    uint32_t nb = mems[i].nb;
-    while (nb > 0) {
-      uint32_t n = min(nb, sizeof(bs));
-      rv = swd_ap_mem_read(c, 0, addr, bs, n);
-      if (rv) goto err_exit;
+  int fd = -1;
+  if (m->path) {
+    if (strcmp(m->path, "-") == 0) {
+      fd = STDOUT_FILENO;
+    } else {
+      fd = open(m->path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
       if (fd == -1) {
-        hexdump("mem", addr, bs, n);
-      } else {
-        fputc('r', stdout);
-        write(fd, bs, n);
+        fprintf(stderr, "%s:%d: output(%s) failed:%d:%s\n", __func__, __LINE__, m->path, errno, strerror(errno));
+        rv = errno;
+        goto err_exit;
       }
-      addr += n;
-      nb -= n;
     }
+  }
 
-    if (fd != -1 && fd != STDOUT_FILENO) {
-      fputc('\n', stdout);
-      fflush(stdout);
-
-      close(fd);
+  uint64_t addr = m->addr;
+  uint32_t nb = m->nb;
+  while (nb > 0) {
+    uint32_t n = min(nb, sizeof(bs));
+    rv = swd_ap_mem_read(c, 0, addr, bs, n);
+    if (rv) goto err_exit;
+    if (fd == -1) {
+      hexdump("mem", addr, bs, n);
+    } else {
+      fputc('r', stdout);
+      write(fd, bs, n);
     }
+    addr += n;
+    nb -= n;
+  }
+
+  if (fd != -1 && fd != STDOUT_FILENO) {
+    fputc('\n', stdout);
+    fflush(stdout);
+
+    close(fd);
   }
 
 err_exit:
@@ -1145,19 +1137,20 @@ static int write_reg(struct pinctl* c, const struct memdesc* r)
   return 0;
 }
 
-static void dump_reg(struct pinctl* c, int sel)
+static void dump_reg(struct pinctl* c, const struct memdesc* r)
 {
   uint32_t val;
   int err;
-  err = swd_ap_mem_reg_read(c, sel, &val);
+  err = swd_ap_mem_reg_read(c, r->addr, &val);
   assert(err == 0);
-  printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, reg_sel_names[sel].nb ? ":" : "", reg_sel_names[sel].nb ? reg_sel_names[sel].s : "", val);
+  printf("%s:%d: sel:%02llx%s%s val:%08x\n", __func__, __LINE__, r->addr, reg_sel_names[r->addr].nb ? ":" : "", reg_sel_names[r->addr].nb ? reg_sel_names[r->addr].s : "", val);
 }
 
 static void dump_regs(struct pinctl* c)
 {
-  for (uint32_t sel = 0; sel < n_reg_sel_names; sel++)
-    dump_reg(c, sel);
+  struct memdesc r;
+  for (r.addr = 0; r.addr < n_reg_sel_names; r.addr++)
+    dump_reg(c, &r);
 }
 
 static int swd_continue(struct pinctl* c)
@@ -1286,14 +1279,10 @@ int main(int argc, char** argv)
   unsigned phase = 500; /* us */
   int opt;
   uint32_t val;
-  struct memdesc* reg_reads = NULL;
-  int n_reg_reads = 0;
-  struct memdesc* reg_writes = NULL;
-  int n_reg_writes = 0;
-  struct memdesc* mem_reads = NULL;
-  int n_mem_reads = 0;
-  struct memdesc* mem_writes = NULL;
-  int n_mem_writes = 0;
+  struct memdesc* regs = NULL;
+  int n_regs = 0;
+  struct memdesc* mems = NULL;
+  int n_mems = 0;
   const char* f_verify = NULL;
   int ext_power_cycle = -1;
   int sysreset = 0;
@@ -1317,15 +1306,16 @@ int main(int argc, char** argv)
         assert(end != s + 1);
         assert(*end == 0);
       }
-      struct memdesc** a = w ? &reg_writes : &reg_reads;
-      int* n = w ? &n_reg_writes : &n_reg_reads;
-      void* p = realloc(*a, sizeof(struct memdesc) * (*n + 1));
+      void* p = realloc(regs, sizeof(regs[0]) * (n_regs + 1));
       assert(p != NULL);
-      *a = p;
-      memset(*a + *n, 0, sizeof(*a));
-      (*a)[*n].addr = sel;
-      if (w) (*a)[*n].val = val;
-      (*n) += 1;
+      regs = p;
+      memset(regs + n_regs, 0, sizeof(regs[0]));
+      regs[n_regs].addr = sel;
+      if (w) {
+        regs[n_regs].flags |= DESC_WRITE;
+        regs[n_regs].val = val;
+      }
+      n_regs++;
       }
       break;
     case 'h':
@@ -1375,14 +1365,14 @@ int main(int argc, char** argv)
           path = end + 1;
         assert(path == NULL || *path != 0);
 
-        void* p = realloc(mem_reads, sizeof(mem_reads[0]) * (n_mem_reads + 1));
+        void* p = realloc(mems, sizeof(mems[0]) * (n_mems + 1));
         if (!p) break;
-        mem_reads = p;
-        memset(mem_reads + n_mem_reads, 0, sizeof(mem_reads[0]));
-        mem_reads[n_mem_reads].addr = addr;
-        mem_reads[n_mem_reads].nb = nb;
-        mem_reads[n_mem_reads].path = path;
-        n_mem_reads++;
+        mems = p;
+        memset(mems + n_mems, 0, sizeof(mems[0]));
+        mems[n_mems].addr = addr;
+        mems[n_mems].nb = nb;
+        mems[n_mems].path = path;
+        n_mems++;
       }
       break;
     case 'V':
@@ -1400,25 +1390,26 @@ int main(int argc, char** argv)
         assert(end != optarg);
         assert((addr & 0x03) == 0);
         optarg = end + 1;
-        void* p = realloc(mem_writes, sizeof(mem_writes[0]) * (n_mem_writes + 1));
+        void* p = realloc(mems, sizeof(mems[0]) * (n_mems + 1));
         if (!p) break;
-        mem_writes = p;
-        memset(mem_writes + n_mem_writes, 0, sizeof(mem_writes[0]));
-        mem_writes[n_mem_writes].addr = addr;
+        mems = p;
+        memset(mems + n_mems, 0, sizeof(mems[0]));
+        mems[n_mems].flags |= DESC_WRITE;
+        mems[n_mems].addr = addr;
         switch (*end) {
         case ':':
-          mem_writes[n_mem_writes].val = strtoul(optarg, &end, 0);
+          mems[n_mems].val = strtoul(optarg, &end, 0);
           assert(end != optarg);
           assert(*end == 0);
           break;
         case '-':
           assert(*optarg != 0);
-          mem_writes[n_mem_writes].path = optarg;
+          mems[n_mems].path = optarg;
           break;
         default:
           assert(*end == ':' || *end == '-');
         }
-        n_mem_writes++;
+        n_mems++;
       }
       break;
     default:
@@ -1545,21 +1536,20 @@ erase_fail:
   /* if we have other commands to do, we have to halt the processor to
    * do anything, but skip all of this if there aren't any commands.
    */
-  if ((n_instr < 0) &&
-      !n_mem_reads && !n_mem_writes &&
-      !n_reg_reads && !n_reg_writes &&
-      !f_verify)
+  if ((n_instr < 0) && !n_mems && !n_regs && !f_verify)
     goto done;
   swd_halt(pins, sysreset);
 
-  for (int i = 0; i < n_reg_writes; i++)
-    write_reg(pins, reg_writes + i);
-  for (int i = 0; i < n_reg_reads; i++)
-    dump_reg(pins, reg_reads[i].addr);
-  if (n_mem_writes > 0)
-    ftfl_mem_write(pins, mem_writes, n_mem_writes);
-  if (n_mem_reads > 0)
-    ftfl_mem_read(pins, mem_reads, n_mem_reads);
+  for (int i = 0; i < n_regs; i++)
+    if (regs[i].flags & DESC_WRITE)
+      write_reg(pins, regs + i);
+    else
+      dump_reg(pins, regs + i);
+  for (int i = 0; i < n_mems; i++)
+    if (mems[i].flags & DESC_WRITE)
+      ftfl_mem_write(pins, mems + i);
+    else
+      ftfl_mem_read(pins, mems + i);
   if (f_verify != NULL)
     ftfl_flash_verify(pins, f_verify);
 
@@ -1577,7 +1567,8 @@ erase_fail:
 done:
   rv = EXIT_SUCCESS;
 err_exit:
-  free(mem_reads);
+  free(mems);
+  free(regs);
   pins_close(pins);
   return rv;
 }
