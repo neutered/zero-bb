@@ -60,11 +60,50 @@
 
 #define REG_FTFL_STAT 0x40020000
 
-struct mem {
+struct memdesc {
   uint64_t addr;
-  uint32_t nb;
+  union {
+  uint32_t val;
+  size_t nb;
   const char* path;
+  };
 };
+
+static struct {
+  const char* s;
+  size_t nb;
+} reg_sel_names[] = {
+#define x(s) { s, sizeof(s) - 1 }
+  [ 0x0d ] = x("sp"),
+  [ 0x0e ] = x("lr"),
+  [ 0x0f ] = x("pc"),
+  [ 0x10 ] = x("xpsr"),
+  [ 0x11 ] = x("msp"),
+  [ 0x12 ] = x("psp"),
+  [ 0x14 ] = x("control"),
+#undef x
+};
+#define n_reg_sel_names (sizeof(reg_sel_names) / sizeof(reg_sel_names[0]))
+
+static int reg2sel(const char* r)
+{
+  char* end;
+  unsigned sel = strtoul(r, &end, 0);
+  if (end != r) {
+    assert(sel < n_reg_sel_names);
+    assert(*end == 0 || *end == ':');
+    return sel;
+  }
+  for (int i = 0; i < n_reg_sel_names; i++) {
+    if (!reg_sel_names[i].nb) continue;
+    if (strncmp(r, reg_sel_names[i].s, reg_sel_names[i].nb) == 0) {
+      end = (char*)(r + reg_sel_names[i].nb);
+      assert(*end == 0 || *end == ':');
+      return i;
+    }
+  }
+  return -1;
+}
 
 static int verbose;
 
@@ -257,7 +296,7 @@ struct port_field_desc {
   const char* name;
 };
 
-static void dump_reg(const char* func, const char* label, const struct port_field_desc* fs, unsigned nfs, uint32_t reg)
+static void dump_reg_fields(const char* func, const char* label, const struct port_field_desc* fs, unsigned nfs, uint32_t reg)
 {
   fprintf(stderr, "%s: %s:%08x:", func, label, reg);
   for (int i = 0; i < nfs; i++) {
@@ -290,7 +329,7 @@ static void dump_dp_status(uint32_t status)
     { 1, 1, "stickyorun" },
     { 0, 0, "orundetect" },
   };
-  dump_reg(__func__, "dp_status", fields, sizeof(fields) / sizeof(fields[0]), status);
+  dump_reg_fields(__func__, "dp_status", fields, sizeof(fields) / sizeof(fields[0]), status);
 }
 
 static void dump_dp_idcode(uint32_t val)
@@ -304,7 +343,7 @@ static void dump_dp_idcode(uint32_t val)
     { 11, 1, "designer" },
     { 0, 0, "rao" },
   };
-  dump_reg(__func__, "dp_idcode", fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg_fields(__func__, "dp_idcode", fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void dump_ap_idcode(uint32_t idcode)
@@ -318,7 +357,7 @@ static void dump_ap_idcode(uint32_t idcode)
     { 7, 4, "variant" },
     { 3, 0, "type" },
   };
-  dump_reg(__func__, "ap_idcode", fields, sizeof(fields) / sizeof(fields[0]), idcode);
+  dump_reg_fields(__func__, "ap_idcode", fields, sizeof(fields) / sizeof(fields[0]), idcode);
 }
 
 static void dump_ap_mem_csw(uint32_t val)
@@ -336,7 +375,7 @@ static void dump_ap_mem_csw(uint32_t val)
     { 3, 3, "res1" },
     { 2, 0, "size" },
   };
-  dump_reg(__func__, "ap_mem_csw", fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg_fields(__func__, "ap_mem_csw", fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void dump_ap_mem_cfg(uint32_t val)
@@ -347,7 +386,7 @@ static void dump_ap_mem_cfg(uint32_t val)
     { 1, 1, "la" },
     { 0, 0, "be" },
   };
-  dump_reg(__func__, "ap_mem_cfg", fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg_fields(__func__, "ap_mem_cfg", fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void dump_reg_cpuid(const char* label, uint32_t val)
@@ -359,7 +398,7 @@ static void dump_reg_cpuid(const char* label, uint32_t val)
     { 15, 4, "partno" },
     { 3, 0, "revision" },
   };
-  dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg_fields(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void dump_reg_dhcsr(const char* label, uint32_t val)
@@ -377,7 +416,7 @@ static void dump_reg_dhcsr(const char* label, uint32_t val)
     { 1, 1, "c_halt" },
     { 0, 0, "c_debugen" },
   };
-  dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg_fields(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void dump_reg_demcr(const char* label, uint32_t val)
@@ -390,7 +429,7 @@ static void dump_reg_demcr(const char* label, uint32_t val)
     { 9, 1, "reserved2" },
     { 0, 0, "vc_corereset" },
   };
-  dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg_fields(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void dump_reg_aircr(const char* label, uint32_t val)
@@ -403,7 +442,7 @@ static void dump_reg_aircr(const char* label, uint32_t val)
     { 1, 1, "vectclractive" },
     { 0, 0, "reserved1" },
   };
-  dump_reg(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
+  dump_reg_fields(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
 static void hexdump(const char* tag, uint64_t cont_addr, const uint8_t* bs, size_t nb)
@@ -1001,7 +1040,7 @@ err_exit:
   return rv;
 }
 
-static int ftfl_mem_read(struct pinctl* c, struct mem* mems, unsigned n_mems)
+static int ftfl_mem_read(struct pinctl* c, struct memdesc* mems, unsigned n_mems)
 {
   int rv = 0;
 
@@ -1051,54 +1090,61 @@ err_exit:
   return rv;
 }
 
-static void dump_regs(struct pinctl* c)
+static int swd_ap_mem_reg_read(struct pinctl* c, int sel, uint32_t* out)
 {
-  static const char* sel_names[] = {
-    [ 0x0d ] = "sp",
-    [ 0x0e ] = "lr",
-    [ 0x0f ] = "debug_return",
-    [ 0x10 ] = "xpsr",
-    [ 0x11 ] = "msp",
-    [ 0x12 ] = "psp",
-    [ 0x14 ] = "control",
-  };
-  static const uint8_t sels[] = { 0x10, 0x11, 0x12, 0x14 };
+  int err = swd_ap_mem_write_u32(c, 0, REG_DCRSR, sel);
+  assert(err == 0);
+  int i;
+  for (i = 0; i < 8; i++) {
+    idle(c);
+    err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, out);
+    assert(err == 0);
+    if ((*out) & (1 << 16)) break;
+  }
+  assert(i < 8);
+  if (i >= 8) return ETIMEDOUT;
+
+  err = swd_ap_mem_read_u32(c, 0, REG_DCRDR, out);
+  assert(err == 0);
+  return 0;
+}
+
+static int write_reg(struct pinctl* c, const struct memdesc* r)
+{
+  int err = swd_ap_mem_write_u32(c, 0, REG_DCRDR, r->val);
+  assert(err == 0);
+
+  assert(r->addr < n_reg_sel_names);
+  err = swd_ap_mem_write_u32(c, 0, REG_DCRSR, (1 << 16) | r->addr);
+  assert(err == 0);
+
+  uint32_t val;
+  int i;
+  for (i = 0; i < 8; i++) {
+    idle(c);
+    err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+    assert(err == 0);
+    if (val & (1 << 16)) break;
+  }
+  assert(i < 8);
+  if (i >= 8) return ETIMEDOUT;
+
+  return 0;
+}
+
+static void dump_reg(struct pinctl* c, int sel)
+{
   uint32_t val;
   int err;
+  err = swd_ap_mem_reg_read(c, sel, &val);
+  assert(err == 0);
+  printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, reg_sel_names[sel].nb ? ":" : "", reg_sel_names[sel].nb ? reg_sel_names[sel].s : "", val);
+}
 
-  for (uint32_t sel = 0; sel < 16; sel++) {
-    err = swd_ap_mem_write_u32(c, 0, REG_DCRSR, sel);
-    assert(err == 0);
-    int i;
-    for (i = 0; i < 8; i++) {
-      idle(c);
-      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
-      assert(err == 0);
-      if (val & (1 << 16)) break;
-    }
-
-    err = swd_ap_mem_read_u32(c, 0, REG_DCRDR, &val);
-    assert(err == 0);
-    printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel] ? ":" : "", sel_names[sel] ? sel_names[sel] : "", val);
-  }
-
-  for (int j = 0; j < sizeof(sels); j++) {
-    const uint8_t sel = sels[j];
-    err = swd_ap_mem_write_u32(c, 0, REG_DCRSR, sel);
-    assert(err == 0);
-    int i;
-    for (i = 0; i < 8; i++) {
-      idle(c);
-      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
-      assert(err == 0);
-      if (val & (1 << 16)) break;
-    }
-
-    err = swd_ap_mem_read_u32(c, 0, REG_DCRDR, &val);
-    assert(err == 0);
-// printf("%s:%d: sel:%02x val:%08x\n", __func__, __LINE__, sel, val);
-    printf("%s:%d: sel:%02x%s%s val:%08x\n", __func__, __LINE__, sel, sel_names[sel] ? ":" : "", sel_names[sel] ? sel_names[sel] : "", val);
-  }
+static void dump_regs(struct pinctl* c)
+{
+  for (uint32_t sel = 0; sel < n_reg_sel_names; sel++)
+    dump_reg(c, sel);
 }
 
 static int swd_continue(struct pinctl* c)
@@ -1226,7 +1272,12 @@ int main(int argc, char** argv)
   int rv = EXIT_FAILURE;
   unsigned phase = 500; /* us */
   int opt;
-  struct mem *mem_reads = NULL;
+  uint32_t val;
+  struct memdesc* reg_reads = NULL;
+  int n_reg_reads = 0;
+  struct memdesc* reg_writes = NULL;
+  int n_reg_writes = 0;
+  struct memdesc* mem_reads = NULL;
   int n_mem_reads = 0;
   const char* f_verify = NULL;
   int ext_power_cycle = -1;
@@ -1234,12 +1285,32 @@ int main(int argc, char** argv)
   int syscontinue = 0;
   int n_instr = -1;
 
-  while ((opt = getopt(argc, argv, "chHn:p:r:vV:xX")) != -1) {
+  while ((opt = getopt(argc, argv, "cg:hHn:p:r:vV:xX")) != -1) {
     char* end;
 
     switch (opt) {
     case 'c':
       syscontinue = 1;
+      break;
+    case 'g': {
+      int sel = reg2sel(optarg);
+      assert(sel != -1);
+      const char* s = strchr(optarg, ':');
+      int w = s != NULL;
+      if (w) {
+        val = strtoul(s + 1, &end, 0);
+        assert(end != s + 1);
+        assert(*end == 0);
+      }
+      struct memdesc** a = w ? &reg_writes : &reg_reads;
+      int* n = w ? &n_reg_writes : &n_reg_reads;
+      void* p = realloc(*a, sizeof(struct memdesc) * (*n + 1));
+      assert(p != NULL);
+      *a = p;
+      (*a)[*n].addr = sel;
+      if (w) (*a)[*n].val = val;
+      (*n) += 1;
+      }
       break;
     case 'h':
     case 'H':
@@ -1326,7 +1397,6 @@ int main(int argc, char** argv)
   resync(pins, 1);
 
   /* reading id takes the debug port out of reset */
-  uint32_t val;
   if ((opt = swd_read(pins, 0, REG_DP_IDCODE, &val)) != 0) {
     fprintf(stderr, "%s:%d: swd_read(IDCODE):%d:%s\n", __func__, __LINE__, opt, strerror(opt));
     goto err_exit;
@@ -1433,9 +1503,18 @@ erase_fail:
   /* if we have other commands to do, we have to halt the processor to
    * do anything, but skip all of this if there aren't any commands.
    */
-  if ((n_instr < 0) && !n_mem_reads && !f_verify)
+  if ((n_instr < 0) && !n_mem_reads && !n_reg_reads && !n_reg_writes && !f_verify)
     goto done;
   swd_halt(pins, sysreset);
+
+  for (int i = 0; i < n_reg_writes; i++)
+    write_reg(pins, reg_writes + i);
+  for (int i = 0; i < n_reg_reads; i++)
+    dump_reg(pins, reg_reads[i].addr);
+  if (n_mem_reads > 0)
+    ftfl_mem_read(pins, mem_reads, n_mem_reads);
+  if (f_verify != NULL)
+    ftfl_flash_verify(pins, f_verify);
 
   if (n_instr >= 0) {
     if (n_instr > 0)
@@ -1447,11 +1526,6 @@ erase_fail:
     }
     dump_regs(pins);
   }
-
-  if (n_mem_reads > 0)
-    ftfl_mem_read(pins, mem_reads, n_mem_reads);
-  if (f_verify != NULL)
-    ftfl_flash_verify(pins, f_verify);
 
 done:
   rv = EXIT_SUCCESS;
