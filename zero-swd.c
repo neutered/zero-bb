@@ -1319,8 +1319,7 @@ int main(int argc, char** argv)
       }
       break;
     case 'h':
-    case 'H':
-      sysreset = isupper(opt);
+      sysreset = 1;
       break;
     case 'n':
       n_instr = strtoul(optarg, &end, 0);
