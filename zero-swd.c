@@ -1351,12 +1351,18 @@ int main(int argc, char** argv)
           nb = strtoul(optarg, &end, 0);
           assert(end != optarg);
           assert(nb > 0);
-          if (strcmp("k", end) == 0)
+          switch (*end) {
+          case 'M':
             nb *= 1024;
-          else if (strcmp("M", end) == 0)
-            nb *= (1024 * 1024);
-          else
-            assert(*end == 0);
+          case 'k':
+            nb *= 1024;
+            end++;
+          case 0:
+            break;
+          default:
+            assert(0);
+          }
+          assert(*end == 0 || *end == ':');
         }
         assert((nb & 0x03) == 0);
 
