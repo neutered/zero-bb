@@ -9,14 +9,14 @@ LD=$(PATH_PREFIX)/$(PREFIX)-ld
 CFLAGS=-Wall -g -DPIN_EZ=0
 
 PROGS=zero-test zero-swd
-LIBS=libpin.a
+LIBS=libpin.a libsha.a
 
 all: $(PROGS)
 
 zero-test: test.c
 	$(CC) -o $@ $^
 
-zero-swd: zero-swd.o libpin.a
+zero-swd: zero-swd.o libpin.a libsha.a
 	$(CC) -o $@ $^
 
 libpin.a: libpin.o pinutil.h
@@ -24,6 +24,9 @@ libpin.a: libpin.o pinutil.h
 
 libpin.i: libpin.c libpin.h
 	$(CC) -E -dM -o $@  $<
+
+libsha.a: sha256.o sha256.h
+	$(AR) cr $@ $^
 
 clean:
 	rm -f *.o *.i *~ $(PROGS) $(LIBS)

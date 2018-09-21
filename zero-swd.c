@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 
 #include "libpin.h"
+#include "sha256.h"
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define max(a, b) ((a) > (b) ? (a) : (b))
@@ -1079,12 +1080,16 @@ static int ftfl_mem_read(struct pinctl* c, const struct memdesc* m)
     }
   }
 
+  SHA256_CTX ctx;
+  sha256_init(&ctx);
+
   uint64_t addr = m->addr;
   uint32_t nb = m->nb;
   while (nb > 0) {
     uint32_t n = min(nb, sizeof(bs));
     rv = swd_ap_mem_read(c, 0, addr, bs, n);
     if (rv) goto err_exit;
+    sha256_update(&ctx, bs, n);
     if (fd == -1) {
       hexdump("mem", addr, bs, n);
     } else {
@@ -1094,6 +1099,10 @@ static int ftfl_mem_read(struct pinctl* c, const struct memdesc* m)
     addr += n;
     nb -= n;
   }
+
+  assert(sizeof(bs) >= SHA256_BLOCK_SIZE);
+  sha256_final(&ctx, bs);
+  hexdump("sha", 0, bs, SHA256_BLOCK_SIZE);
 
   if (fd != -1 && fd != STDOUT_FILENO) {
     fputc('\n', stdout);
