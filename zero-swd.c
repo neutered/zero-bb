@@ -427,9 +427,20 @@ static void dump_reg_demcr(const char* label, uint32_t val)
   static const struct port_field_desc fields[] = {
     { 31, 25, "reserved0" },
     { 24, 24, "dwtena" },
-    { 23, 11, "reseerved1" },
+    { 23, 20, "reseerved1" },
+    { 19, 19, "mon_req" },
+    { 18, 18, "mon_step" },
+    { 17, 17, "mon_pend" },
+    { 16, 16, "mon_en" },
+    { 15, 11, "reserved" },
     { 10, 10, "vc_harderr" },
-    { 9, 1, "reserved2" },
+    { 9, 9, "vc_interr" },
+    { 8, 8, "vc_buserr" },
+    { 7, 7, "vc_staterr" },
+    { 6, 6, "vc_chkerr" },
+    { 5, 5, "vc_nocperr" },
+    { 4, 4, "vc_mmerr" },
+    { 3, 1, "reserved2" },
     { 0, 0, "vc_corereset" },
   };
   dump_reg_fields(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
@@ -1233,13 +1244,15 @@ static int swd_halt(struct pinctl* c, int sysreset)
   }
 
   if (sysreset) {
+    uint32_t demcr;
+
     /* set to hold after reset ... */
-    err = swd_ap_mem_read_u32(c, 0, REG_DEMCR, &val);
+    err = swd_ap_mem_read_u32(c, 0, REG_DEMCR, &demcr);
     assert(err == 0);
     if (verbose)
-      fprintf(stderr, "%s:%d: demcr:%08x\n", __func__, __LINE__, val);
-    if (!(val & (1 << 0))) {
-      err = swd_ap_mem_write_u32(c, 0, REG_DEMCR, val | (1 << 0));
+      fprintf(stderr, "%s:%d: demcr:%08x\n", __func__, __LINE__, demcr);
+    if (!(demcr & (1 << 0))) {
+      err = swd_ap_mem_write_u32(c, 0, REG_DEMCR, demcr | (1 << 0));
       assert(err == 0);
     }
 
@@ -1261,6 +1274,13 @@ static int swd_halt(struct pinctl* c, int sysreset)
     }
     /* we're held in reset so another dhcsr read doesn't clear that */
     assert(val & (1 << 25));
+
+    /* clear the hold state because it 'sticks' across the reset line
+     * (it's cleared on a power-on-reset), this means that the reset
+     * comes up in the halt state, which is a little surprising.
+     */
+    err = swd_ap_mem_write_u32(c, 0, REG_DEMCR, demcr & ~(1 << 0));
+    assert(err == 0);
   }
 
   /* validate halt state */
