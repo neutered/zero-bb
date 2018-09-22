@@ -1214,6 +1214,22 @@ done:
   return rv;
 }
 
+static int swd_halt_wait(struct pinctl* c)
+{
+#define HALT_WAIT_CYCLES 8
+  uint32_t val;
+  int i;
+  for (i = 0; i < HALT_WAIT_CYCLES; i++) {
+    int err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
+    assert(err == 0);
+    if (val & (1 << 17)) break;
+    idle(c);
+  }
+  if (verbose)
+    fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
+  return (i < HALT_WAIT_CYCLES);
+}
+
 /* returns EBUSY if teh target appears to be stuck in reset.
  */
 static int swd_halt(struct pinctl* c, int sysreset)
@@ -1244,15 +1260,8 @@ static int swd_halt(struct pinctl* c, int sysreset)
     /* if sysreset, then the halt comes again later when we reset, but
      * otherwise we wait for halt status to be asserted.
      */
-#define HALT_WAIT_CYCLES 8
-    for (int i = 0; !sysreset && (i < HALT_WAIT_CYCLES) && !(val & (1 << 17)); i++) {
-      idle(c);
-
-      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
-      assert(err == 0);
-      if (verbose)
-        fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
-    }
+    if (!sysreset)
+      swd_halt_wait(c);
   }
 
   if (sysreset) {
@@ -1593,15 +1602,13 @@ erase_fail:
   if (f_verify != NULL)
     ftfl_flash_verify(pins, f_verify);
 
-  if (n_instr >= 0) {
-    if (n_instr > 0)
-      dump_regs(pins);
-    for (int i = 0; i < n_instr; i++) {
-      opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 2) | (1 << 0));
-      assert(opt == 0);
-      idle(pins);
-    }
-    dump_regs(pins);
+  for (int i = 0; i < n_instr; i++) {
+    opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000fff0) | (0xa05f << 16) | (1 << 2) | (1 << 0));
+    assert(opt == 0);
+
+    /* after the single-step compltes we should be back in halt state */
+    opt = swd_halt_wait(pins);
+    assert(opt);
   }
 
 done:
