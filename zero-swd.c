@@ -1169,8 +1169,11 @@ static void dump_reg(struct pinctl* c, const struct memdesc* r)
 static void dump_regs(struct pinctl* c)
 {
   struct memdesc r;
-  for (r.addr = 0; r.addr < n_reg_sel_names; r.addr++)
+  for (r.addr = 0; r.addr < n_reg_sel_names; r.addr++) {
+    /* special case skipping to avoid outputing a bogus value */
+    if (r.addr == 0x13) continue;
     dump_reg(c, &r);
+  }
 }
 
 static int swd_continue(struct pinctl* c)
@@ -1328,6 +1331,7 @@ int main(int argc, char** argv)
     case 'g': {
       int sel = reg2sel(optarg);
       assert(sel != -1);
+      assert(sel != 0x13);
       const char* s = strchr(optarg, ':');
       int w = s != NULL;
       if (w) {
