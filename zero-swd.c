@@ -1331,9 +1331,9 @@ int main(int argc, char** argv)
     case 'g': {
       int sel = reg2sel(optarg);
       assert(sel != -1);
-      assert(sel != 0x13);
       const char* s = strchr(optarg, ':');
       int w = s != NULL;
+      assert(sel != 0x13 || !w);
       if (w) {
         val = strtoul(s + 1, &end, 0);
         assert(end != s + 1);
@@ -1581,6 +1581,8 @@ erase_fail:
   for (int i = 0; i < n_regs; i++)
     if (regs[i].flags & DESC_WRITE)
       write_reg(pins, regs + i);
+    else if (regs[i].addr == 0x13)
+      dump_regs(pins);
     else
       dump_reg(pins, regs + i);
   for (int i = 0; i < n_mems; i++)
