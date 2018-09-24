@@ -1327,7 +1327,7 @@ int main(int argc, char** argv)
   int ext_power_cycle = -1;
   int sysreset = 0;
   int syscontinue = 0;
-  int n_instr = -1;
+  int n_instr = 0;
 
   while ((opt = getopt(argc, argv, "cg:hHn:p:r:vV:w:xX")) != -1) {
     char* end;
@@ -1582,7 +1582,7 @@ erase_fail:
   /* if we have other commands to do, we have to halt the processor to
    * do anything, but skip all of this if there aren't any commands.
    */
-  if ((n_instr < 0) && !n_mems && !n_regs && !f_verify)
+  if (!n_instr && !n_mems && !n_regs && !f_verify)
     goto done;
   swd_halt(pins, sysreset);
 
