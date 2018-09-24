@@ -1189,11 +1189,10 @@ static int swd_continue(struct pinctl* c)
   if (verbose)
     fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
 
-  /* if debug isn't enabled then we shouldn't be halted? */
-  assert((val & (1 << 0)) || ((val & (1 << 17)) == 0));
-
-  /* if we're not halted then all is good */
-  rv = (val & (1 << 17));
+  /* if we're not halted then all is good, but having debug enabled
+   * means that other things are in a middle state too.
+   */
+  rv = (val & (1 << 17 | 1 << 0));
   if (!rv) {
     printf("%s:%d: dhcsr:%08x not halted\n", __func__, __LINE__, val);
     goto done;
