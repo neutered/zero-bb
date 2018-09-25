@@ -1462,6 +1462,7 @@ int main(int argc, char** argv)
       assert(0);
     }
   }
+  assert(optind == argc);
 
   struct pinctl* pins = pins_open(phase);
   if (!pins) goto err_exit;
