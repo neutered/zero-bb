@@ -1329,7 +1329,7 @@ int main(int argc, char** argv)
   int syscontinue = 0;
   int n_instr = 0;
 
-  while ((opt = getopt(argc, argv, "cg:hHn:p:r:vV:w:xX")) != -1) {
+  while ((opt = getopt(argc, argv, "cg:hn:p:r:vV:w:xX")) != -1) {
     char* end;
 
     switch (opt) {
