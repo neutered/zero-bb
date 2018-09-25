@@ -120,7 +120,7 @@ static void idle(struct pinctl* pins)
 static const uint8_t bs[] = { 0x00, 0x00, 0x00, 0x00, };
 pins_write(pins, bs, (sizeof(bs)) * 8);
 #else
-usleep(100000);
+usleep(1000);
 #endif
 }
 
@@ -1199,7 +1199,7 @@ static int swd_continue(struct pinctl* c)
   }
 
   /* clearing dbeug should be sufficient */
-  err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (val & ~(0xffff0000 | (1 << 1) | (1 << 0))) | (0xa05f << 16));
+  err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (0xa05f << 16));
   assert(err == 0);
 
   /* double check */
@@ -1253,7 +1253,7 @@ static int swd_halt(struct pinctl* c, int sysreset)
   /* enable debug before going to doing any fiddling w/ sysreset */
   if ((val & ((1 << 17) | (1 << 0))) != ((1 << 17) | (1 << 0))) {
     /* halt and enable debug */
-    err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (val & 0x0000ffff) | (0xa05f << 16) | (1 << 1) | (1 << 0));
+    err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (0xa05f << 16) | (1 << 1) | (1 << 0));
     assert(err == 0);
 
     /* if sysreset, then the halt comes again later when we reset, but
@@ -1603,7 +1603,7 @@ erase_fail:
     ftfl_flash_verify(pins, f_verify);
 
   for (int i = 0; i < n_instr; i++) {
-    opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (val & 0x0000fff0) | (0xa05f << 16) | (1 << 2) | (1 << 0));
+    opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (0xa05f << 16) | (1 << 2) | (1 << 0));
     assert(opt == 0);
 
     /* after the single-step compltes we should be back in halt state */
