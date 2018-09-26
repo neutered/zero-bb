@@ -84,6 +84,7 @@ static struct {
   [ 0x10 ] = x("xpsr"),
   [ 0x11 ] = x("msp"),
   [ 0x12 ] = x("psp"),
+  [ 0x13 ] = x("all"), /* special-case usage for a reserved (unused) selector */
   [ 0x14 ] = x("control"),
 #undef x
 };
