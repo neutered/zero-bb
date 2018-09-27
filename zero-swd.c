@@ -308,7 +308,7 @@ static void dump_reg_fields(const char* func, const char* label, const struct po
     const uint32_t mask = (((1ull << (fs[i].hi + 1)) - 1) &
                            (~0ul << fs[i].lo));
     const uint32_t val = (reg & mask) >> fs[i].lo;
-    if (val)
+    if (val || !reg)
       fprintf(stderr, "%s:%x ", fs[i].name, val);
   }
   fprintf(stderr, "\n");
