@@ -1190,17 +1190,15 @@ static int swd_continue(struct pinctl* c)
   if (verbose)
     fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
 
-  /* if we're not halted then all is good, but having debug enabled
-   * means that other things are in a middle state too.
-   */
-  rv = (val & (1 << 17 | 1 << 0));
+  /* if we're not halted then all is good. */
+  rv = (val & (1 << 17));
   if (!rv) {
     printf("%s:%d: dhcsr:%08x not halted\n", __func__, __LINE__, val);
     goto done;
   }
 
-  /* clearing dbeug should be sufficient */
-  err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (0xa05f << 16));
+  /* clearing halt should be sufficient, but we can only do that w/ debug. */
+  err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (0xa05f << 16) | (1 << 0));
   assert(err == 0);
 
   /* double check */
@@ -1604,6 +1602,7 @@ erase_fail:
     ftfl_flash_verify(pins, f_verify);
 
   for (int i = 0; i < n_instr; i++) {
+    /* single-step w/o halt */
     opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (0xa05f << 16) | (1 << 2) | (1 << 0));
     assert(opt == 0);
 
