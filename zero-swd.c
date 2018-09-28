@@ -51,6 +51,10 @@
 #define REG_AP_MEM_BASE_LO 0xf8
 
 /* arm 'memory mapped' registers */
+#define REG_FP_CTRL  0xe0002000
+#define REG_FP_REMAP 0xe0002004
+#define REG_FP_COMPx 0xe0002008
+
 #define REG_CPUID 0xe000ed00
 #define REG_AIRCR 0xe000ed0c
 #define REG_DFSR  0xe000ed30
@@ -61,9 +65,13 @@
 
 #define REG_FTFL_STAT 0x40020000
 
+#define BREAK_ADD 0
+#define BREAK_DEL 1
+
 struct memdesc {
 #define DESC_WRITE (1 << 0)
 #define DESC_PATH  (1 << 1)
+#define DESC_LIST  (1 << 2)
   uint32_t flags;
   uint64_t addr;
   union {
@@ -394,6 +402,31 @@ static void dump_ap_mem_cfg(uint32_t val)
   dump_reg_fields(__func__, "ap_mem_cfg", fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
+static void dump_reg_fp_ctrl(const char* label, uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 15, "reserved0" },
+    { 14, 12, "n_code_hi" },
+    { 11, 8, "n_literal" },
+    { 7, 4, "n_code_lo" },
+    { 1, 1, "key" },
+    { 0, 0, "enable" },
+  };
+  dump_reg_fields(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
+}
+
+static void dump_reg_fp_comp(const char* label, uint32_t val)
+{
+  static const struct port_field_desc fields[] = {
+    { 31, 30, "replace" },
+    { 29, 29, "reserved" },
+    { 28, 2, "comp" },
+    { 1, 1, "reserved" },
+    { 0, 0, "enable" },
+  };
+  dump_reg_fields(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
+}
+
 static void dump_reg_cpuid(const char* label, uint32_t val)
 {
   static const struct port_field_desc fields[] = {
@@ -409,7 +442,7 @@ static void dump_reg_cpuid(const char* label, uint32_t val)
 static void dump_reg_dhcsr(const char* label, uint32_t val)
 {
   static const struct port_field_desc fields[] = {
-    { 31, 26, "reserved0" }, // top part of dbg key for writes
+    { 31, 26, "reserved0" },
     { 25, 25, "s_reset_st" },
     { 24, 24, "s_retire_st" },
     { 23, 18, "reserved1" },
@@ -479,10 +512,11 @@ static void dump_mem(uint64_t addr, const uint8_t* bs, size_t nb)
   void (*reg)(const char*, uint32_t) = NULL;
   if (nb == 4) {
     switch (addr) {
-    case REG_CPUID: label = "cpuid"; reg = dump_reg_cpuid; break;
-    case REG_AIRCR: label = "aircr"; reg = dump_reg_aircr; break;
-    case REG_DHCSR: label = "dhcsr"; reg = dump_reg_dhcsr; break;
-    case REG_DEMCR: label = "demcr"; reg = dump_reg_demcr; break;
+    case REG_FP_CTRL: label = "fp_ctrl"; reg = dump_reg_fp_ctrl; break;
+    case REG_CPUID:   label = "cpuid";   reg = dump_reg_cpuid;   break;
+    case REG_AIRCR:   label = "aircr";   reg = dump_reg_aircr;   break;
+    case REG_DHCSR:   label = "dhcsr";   reg = dump_reg_dhcsr;   break;
+    case REG_DEMCR:   label = "demcr";   reg = dump_reg_demcr;   break;
     default: goto label_addr;
     }
   } else {
@@ -588,7 +622,6 @@ static int swd_ap_mem_read(struct pinctl* c, int ap, uint64_t addr, uint8_t* bs,
   assert(err == 0);
   if (verbose > 2)
     dump_ap_mem_csw(csw);
-// assert((csw >> 6) & 0x01);
 
   /* set 32-bit transfer size and auto-increment on access */
   if ((csw & ((3 << 4) | (7 << 0))) != ((1 << 4) | (2 << 0))) {
@@ -1177,56 +1210,26 @@ static void dump_regs(struct pinctl* c)
   }
 }
 
-static int swd_continue(struct pinctl* c)
+static int swd_dhcsr_wait(struct pinctl* c, int n, int sense, uint32_t mask)
 {
-  int rv = -1;
-
-  /* if we're not halted or w/ debug enabled then there's nothing we
-   * can do, but it was an error to come here at all w/o debug enabled.
-   */
-  uint32_t val;
-  int err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
-  assert(err == 0);
-  if (verbose)
-    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
-
-  /* if we're not halted then all is good. */
-  rv = (val & (1 << 17));
-  if (!rv) {
-    printf("%s:%d: dhcsr:%08x not halted\n", __func__, __LINE__, val);
-    goto done;
-  }
-
-  /* clearing halt should be sufficient, but we can only do that w/ debug. */
-  err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (0xa05f << 16) | (1 << 0));
-  assert(err == 0);
-
-  /* double check */
-  err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
-  assert(err == 0);
-  if (verbose)
-    fprintf(stderr, "%s:%d: dhcsr:%08x\n", __func__, __LINE__, val);
-  rv = (val & (1 << 17));
-
-done:
-  return rv;
-}
-
-static int swd_halt_wait(struct pinctl* c)
-{
-#define HALT_WAIT_CYCLES 8
   uint32_t val;
   int i;
-  for (i = 0; i < HALT_WAIT_CYCLES; i++) {
+  for (i = 0; i < n; i++) {
     int err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
     assert(err == 0);
-    if (val & (1 << 17)) break;
+    if ((sense && (val & mask)) || (!sense && !(val & mask)))
+      break;
     idle(c);
   }
   if (verbose)
-    fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
-  return (i < HALT_WAIT_CYCLES);
+    fprintf(stderr, "%s:%d: wait:%d:%d dhcsr:%08x\n", __func__, __LINE__, i, n, val);
+  return (i < n);
 }
+
+#define DHCSR_WAIT_CYCLES 8
+#define swd_cont_wait(c) swd_dhcsr_wait(c, DHCSR_WAIT_CYCLES, 0, (1 << 17))
+#define swd_halt_wait(c) swd_dhcsr_wait(c, DHCSR_WAIT_CYCLES, 1, (1 << 17))
+#define swd_reset_wait(c) swd_dhcsr_wait(c, DHCSR_WAIT_CYCLES, 1, (1 << 25))
 
 /* returns EBUSY if teh target appears to be stuck in reset.
  */
@@ -1283,16 +1286,8 @@ static int swd_halt(struct pinctl* c, int sysreset)
     err = swd_ap_mem_write_u32(c, 0, REG_AIRCR, (val & 0x0000ffff) | 0x05fa0000 | (1 << 2));
     assert(err == 0);
 
-    for (int i = 0; (i < HALT_WAIT_CYCLES) && !(val & (1 << 25)); i++) {
-      idle(c);
-
-      err = swd_ap_mem_read_u32(c, 0, REG_DHCSR, &val);
-      assert(err == 0);
-      if (verbose)
-        fprintf(stderr, "%s:%d: halt:%d dhcsr:%08x\n", __func__, __LINE__, i, val);
-    }
-    /* we're held in reset so another dhcsr read doesn't clear that */
-    assert(val & (1 << 25));
+    err = swd_reset_wait(c);
+    assert(err);
 
     /* clear the hold state because it 'sticks' across the reset line
      * (it's cleared on a power-on-reset), this means that the reset
@@ -1312,12 +1307,192 @@ static int swd_halt(struct pinctl* c, int sysreset)
   return (val & (1 << 17)) ? 0 : ETIMEDOUT;
 }
 
+static void swd_continue(struct pinctl* c, int single)
+{
+  /* how are we halted? */
+  uint32_t dfsr;
+  int err = swd_ap_mem_read_u32(c, 0, REG_DFSR, &dfsr);
+  assert(err == 0);
+  if (verbose)
+    fprintf(stderr, "%s:%d: dfsr:%08x\n", __func__, __LINE__, dfsr);
+
+  /* if we're not halted then all is good. halt on reset counts as a
+   * (reset) vector catch rather than halt.
+   */
+  if (!(dfsr & (1 << 3 | 1 << 1 | 1 << 0))) {
+    printf("%s:%d: dfsr:%08x not halted\n", __func__, __LINE__, dfsr);
+    return;
+  }
+
+  /* since we're not using debug mon, if we're at a breakpoint then
+   * continuing will re-enter on trying to issue the instruction.
+   * since the breakpoint is across an address range, we do some
+   * monkeying w/ the dfsr state to support single-stepping and
+   * contuing across the breakpoint.
+   */
+  if (dfsr & (1 << 1)) {
+    uint32_t ctrl;
+    /* 'global' disable on breakpoint handling */
+    err = swd_ap_mem_read_u32(c, 0, REG_FP_CTRL, &ctrl);
+    assert(err == 0);
+    if (verbose)
+      fprintf(stderr, "%s:%d: fp_ctrl:%08x\n", __func__, __LINE__, ctrl);
+    assert(ctrl & (1 << 0));
+    err = swd_ap_mem_write_u32(c, 0, REG_FP_CTRL, (ctrl & ~(1 << 0)) | (1 << 1));
+    assert(err == 0);
+
+    /* we single-step here to manage the state if we're branching back
+     * into the breakpoint region while breakpoints are disabled.
+     */
+    uint32_t pc_start, pc_end;
+    err = swd_ap_mem_reg_read(c, 0x0f, &pc_start);
+    assert(err == 0);
+    for (int i = 0; i < 1 + !single; i++) {
+      err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (0xa05f << 16) | (1 << 2) | (1 << 0));
+      assert(err == 0);
+
+      /* after the single-step compltes we should be back in halt state */
+      err = swd_halt_wait(c);
+      assert(err);
+    }
+    err = swd_ap_mem_reg_read(c, 0x0f, &pc_end);
+    assert(err == 0);
+    if (verbose)
+      fprintf(stderr, "%s:%d: pc:%08x:%08x\n", __func__, __LINE__, pc_start, pc_end);
+
+    /* re-enable breakpoints */
+    err = swd_ap_mem_write_u32(c, 0, REG_FP_CTRL, ctrl | (1 << 1));
+    assert(err == 0);
+
+    /* if we're single-stepping from the start of the breakpoint region or
+     * if the start and end pc are w/in the same region then we leave the
+     * breakpoint bit set in the status.
+     *
+     * if single-stepping then we've left the region but should be halted still.
+     *
+     * otherwise, continue as usual which will re-set the dfsr bits.
+     */
+    if ((single && ((pc_start & 0x3) == 0)) || ((pc_start & ~0x03) == (pc_end & ~0x03)))
+      dfsr &= ~(1 << 1);
+    else if (single)
+      dfsr &= ~(1 << 0);
+    else
+      goto cont;
+
+    /* set 'next' state */
+    err = swd_ap_mem_write_u32(c, 0, REG_DFSR, dfsr);
+    assert(err == 0);
+  } else {
+cont:
+    /* 'clear' summary bits before they can change w/ the update to dhcsr. */
+    err = swd_ap_mem_write_u32(c, 0, REG_DFSR, dfsr);
+    assert(err == 0);
+
+    /* clearing halt should be sufficient, but we can only do that w/ debug. */
+    err = swd_ap_mem_write_u32(c, 0, REG_DHCSR, (0xa05f << 16) | (!!single << 2) | (1 << 0));
+    assert(err == 0);
+
+    /* wait for the state to change */
+    single ? swd_halt_wait(c) : swd_cont_wait(c);
+  }
+}
+
+static void fpb_handler(struct pinctl* c, int n_breaks, struct memdesc* breaks)
+{
+  uint32_t ctl, val;
+  int err;
+
+  err = swd_ap_mem_read_u32(c, 0, REG_FP_CTRL, &ctl);
+  assert(err == 0);
+  unsigned n_code = ((ctl & 0x7000) >> 8) | ((ctl & 0xf0) >> 4);
+  unsigned n_literal = ((ctl & 0x0f00) >> 8);
+  int enable = (ctl & 1), update_ctrl = 0;
+  if (verbose)
+    fprintf(stderr, "%s:%d: fp_ctrl:%08x n:%u:%u enable:%d\n", __func__, __LINE__, ctl, n_code, n_literal, enable);
+
+  for (int i = 0; i < n_breaks; i++) {
+    const struct memdesc* d = breaks + i;
+
+    if (d->flags & DESC_LIST) {
+      char label[] = "fp_xxxx_xx";
+
+      for (int j = 0; j < n_code + n_literal; j++) {
+        uint32_t r = REG_FP_COMPx + (j * 4);
+        err = swd_ap_mem_read_u32(c, 0, r, &val);
+        assert(err == 0);
+        if (!(val & 1))
+          continue;
+        sprintf(label, "fp_%s_%02x", j < n_code ? "comp" : "lit", j - i < n_code ? 0 : n_code);
+        dump_reg_fp_comp(label, val);
+        fprintf(stderr, "%s:%d: %s: addr:%08x\n", __func__, __LINE__, label, (val & ~0xe0000003));
+      }
+    } else if (d->val == BREAK_ADD) {
+      #ifndef NDEBUG
+      /* double check for existing breakpoints */
+      for (int j = 0; j < n_code + n_literal; j++) {
+        uint32_t r = REG_FP_COMPx + (j * 4);
+        err = swd_ap_mem_read_u32(c, 0, r, &val);
+        assert(err == 0);
+        assert(!(val & 1) || (val & ~0xe0000003) != d->addr);
+      }
+#endif /* NDEBUG */
+      /* find a free slot */
+      for (int j = 0; j < n_code + n_literal; j++) {
+        uint32_t r = REG_FP_COMPx + (j * 4);
+        err = swd_ap_mem_read_u32(c, 0, r, &val);
+        assert(err == 0);
+        if (!(val & 1)) {
+          /* comparator or literal? */
+          val = ((j < n_code) ? 0xc0000001 : 0x00000001) | d->addr;
+fprintf(stderr, "%s:%d: i:%u val:%08x\n", __func__, __LINE__, j, val);
+          err = swd_ap_mem_write_u32(c, 0, r, val);
+          assert(err == 0);
+          update_ctrl |= 1;
+          break;
+        }
+      }
+    } else if (d->val == BREAK_DEL) {
+      for (int j = 0; j < n_code + n_literal; j++) {
+        uint32_t r = REG_FP_COMPx + (j * 4);
+        err = swd_ap_mem_read_u32(c, 0, r, &val);
+        assert(err == 0);
+        if ((val & 1) && ((val & ~0xe0000003) == d->addr)) {
+          val &= ~0x01;
+          err = swd_ap_mem_write_u32(c, 0, r, val);
+          assert(err == 0);
+          update_ctrl |= 1;
+          break;
+        }
+      }
+    } else {
+      assert(0);
+    }
+  }
+
+  if (update_ctrl) {
+    int n = 0;
+    for (int i = 0; i < n_code + n_literal; i++) {
+      uint32_t r = REG_FP_COMPx + (i * 4);
+      err = swd_ap_mem_read_u32(c, 0, r, &val);
+      assert(err == 0);
+      n += (val & 1);
+    }
+    if ((enable && (n == 0)) || (!enable && (n > 0))) {
+      ctl |= (n != 0) | (1 << 1);
+      err = swd_ap_mem_write_u32(c, 0, REG_FP_CTRL, ctl);
+      assert(err == 0);
+    }
+  }
+}
+
 int main(int argc, char** argv)
 {
   int rv = EXIT_FAILURE;
   unsigned phase = 500; /* us */
   int opt;
   uint32_t val;
+  struct memdesc* breaks = NULL;
+  int n_breaks = 0;
   struct memdesc* regs = NULL;
   int n_regs = 0;
   struct memdesc* mems = NULL;
@@ -1328,10 +1503,48 @@ int main(int argc, char** argv)
   int syscontinue = 0;
   int n_instr = 0;
 
-  while ((opt = getopt(argc, argv, "cg:hn:p:r:vV:w:xX")) != -1) {
+  while ((opt = getopt(argc, argv, "b:cg:hn:p:r:vV:w:xX")) != -1) {
     char* end;
 
     switch (opt) {
+    case 'b': {
+      int sel;
+      uint32_t addr = 0;
+
+      if (strcmp(optarg, "list") == 0) {
+        sel = -1;
+      } else {
+        addr = strtoull(optarg, &end, 0);
+        assert(end != optarg);
+        assert((addr & 0x03) == 0);
+        assert((addr & 0xe0000000) == 0);
+        assert(*end == 0 || *end == ':');
+        if ((*end == 0) || (strcmp(end, ":add") == 0)) {
+          sel = BREAK_ADD;
+        } else if (strcmp(end, ":del") == 0) {
+          sel = BREAK_DEL;
+        } else {
+          fprintf(stderr, "%s:%d: invalid selector:%s\n", __func__, __LINE__, end + 1);
+          assert(0);
+        }
+      }
+
+      void* p = realloc(breaks, sizeof(*breaks) * (n_breaks + 1));
+      assert(p);
+      breaks = p;
+      memset(breaks + n_breaks, 0, sizeof(*breaks));
+      switch (sel) {
+      case -1:
+        breaks[n_breaks].flags |= DESC_LIST;
+        break;
+      default:
+        breaks[n_breaks].addr = addr;
+        breaks[n_breaks].val = sel;
+        break;
+      }
+      n_breaks++;
+      }
+      break;
     case 'c':
       syscontinue = 1;
       break;
@@ -1364,6 +1577,7 @@ int main(int argc, char** argv)
     case 'n':
       n_instr = strtoul(optarg, &end, 0);
       assert(end != optarg && *end == 0);
+      assert(n_instr > 0);
       break;
     case 'p':
       phase = strtoul(optarg, &end, 0);
@@ -1577,12 +1791,12 @@ erase_fail:
 
   /* did we previously halt things? if we're releasing, then we're done here. */
   if (syscontinue)
-    swd_continue(pins);
+    swd_continue(pins, 0);
 
   /* if we have other commands to do, we have to halt the processor to
    * do anything, but skip all of this if there aren't any commands.
    */
-  if (!n_instr && !n_mems && !n_regs && !f_verify)
+  if (!n_breaks && !n_instr && !n_mems && !n_regs && !f_verify)
     goto done;
   swd_halt(pins, sysreset);
 
@@ -1600,20 +1814,17 @@ erase_fail:
       ftfl_mem_read(pins, mems + i);
   if (f_verify != NULL)
     ftfl_flash_verify(pins, f_verify);
-
+  if (n_breaks)
+    fpb_handler(pins, n_breaks, breaks);
   for (int i = 0; i < n_instr; i++) {
     /* single-step w/o halt */
-    opt = swd_ap_mem_write_u32(pins, 0, REG_DHCSR, (0xa05f << 16) | (1 << 2) | (1 << 0));
-    assert(opt == 0);
-
-    /* after the single-step compltes we should be back in halt state */
-    opt = swd_halt_wait(pins);
-    assert(opt);
+    swd_continue(pins, 1);
   }
 
 done:
   rv = EXIT_SUCCESS;
 err_exit:
+  free(breaks);
   free(mems);
   free(regs);
   pins_close(pins);
