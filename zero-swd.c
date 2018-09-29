@@ -1816,9 +1816,16 @@ erase_fail:
     ftfl_flash_verify(pins, f_verify);
   if (n_breaks)
     fpb_handler(pins, n_breaks, breaks);
-  for (int i = 0; i < n_instr; i++) {
-    /* single-step w/o halt */
+
+  if (n_instr) {
+  opt = swd_ap_mem_reg_read(pins, 0x0f, &val);
+  assert(opt == 0);
+  printf("%s:%d: n:%d pc:%08x\n", __func__, __LINE__, n_instr, val);
+  for (int i = 0; i < n_instr; i++)
     swd_continue(pins, 1);
+  opt = swd_ap_mem_reg_read(pins, 0x0f, &val);
+  assert(opt == 0);
+  printf("%s:%d: pc:%08x\n", __func__, __LINE__, val);
   }
 
 done:
