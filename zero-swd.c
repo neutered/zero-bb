@@ -1422,7 +1422,7 @@ static void fpb_handler(struct pinctl* c, int n_breaks, struct memdesc* breaks)
         assert(err == 0);
         if (!(val & 1))
           continue;
-        sprintf(label, "fp_%s_%02x", j < n_code ? "comp" : "lit", j - i < n_code ? 0 : n_code);
+        sprintf(label, "fp_%s_%02x", j < n_code ? "comp" : "lit", j - (j < n_code ? 0 : n_code));
         dump_reg_fp_comp(label, val);
         fprintf(stderr, "%s:%d: %s: addr:%08x\n", __func__, __LINE__, label, (val & ~0xe0000003));
       }
