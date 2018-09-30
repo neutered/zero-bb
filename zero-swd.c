@@ -494,13 +494,17 @@ static void dump_reg_aircr(const char* label, uint32_t val)
   dump_reg_fields(__func__, label, fields, sizeof(fields) / sizeof(fields[0]), val);
 }
 
-static void hexdump(const char* tag, uint64_t cont_addr, const uint8_t* bs, size_t nb)
+static void hexdump(int ascii, const char* tag, uint64_t cont_addr, const uint8_t* bs, size_t nb)
 {
   assert(strlen(tag) > 0);
   for (int i = 0; i < nb; i += 16) {
-    fprintf(stderr, "%s %08llx : ", tag, cont_addr + i);
+    fprintf(stderr, "%s %08llx:", tag, cont_addr + i);
     for (int j = 0; j < 16 && i + j < nb; j++)
       fprintf(stderr, "%02x ", bs[i + j]);
+    if (ascii) {
+    for (int j = 0; j < 16 && i + j < nb; j++)
+      fprintf(stderr, "%c", isprint(bs[i + j]) ? bs[i + j] : '.');
+    }
     fprintf(stderr, "\n");
   }
 }
@@ -526,7 +530,7 @@ label_addr:
     else
       sprintf(backing, "%08x", (uint32_t)addr);
   }
-  hexdump(label, addr, bs, nb);
+  hexdump(0, label, addr, bs, nb);
   if (reg)
     (*reg)(label, *(uint32_t*)bs);
 }
@@ -1125,7 +1129,7 @@ static int ftfl_mem_read(struct pinctl* c, const struct memdesc* m)
     if (rv) goto err_exit;
     sha256_update(&ctx, bs, n);
     if (fd == -1) {
-      hexdump("mem", addr, bs, n);
+      hexdump(1, "mem", addr, bs, n);
     } else {
       fputc('r', stdout);
       write(fd, bs, n);
@@ -1136,7 +1140,7 @@ static int ftfl_mem_read(struct pinctl* c, const struct memdesc* m)
 
   assert(sizeof(bs) >= SHA256_BLOCK_SIZE);
   sha256_final(&ctx, bs);
-  hexdump("sha", 0, bs, SHA256_BLOCK_SIZE);
+  hexdump(0, "sha", 0, bs, SHA256_BLOCK_SIZE);
 
   if (fd != -1 && fd != STDOUT_FILENO) {
     fputc('\n', stdout);
