@@ -498,12 +498,15 @@ static void hexdump(int ascii, const char* tag, uint64_t cont_addr, const uint8_
 {
   assert(strlen(tag) > 0);
   for (int i = 0; i < nb; i += 16) {
+    int j;
     fprintf(stderr, "%s %08llx:", tag, cont_addr + i);
-    for (int j = 0; j < 16 && i + j < nb; j++)
+    for (j = 0; j < 16 && i + j < nb; j++)
       fprintf(stderr, "%02x ", bs[i + j]);
     if (ascii) {
-    for (int j = 0; j < 16 && i + j < nb; j++)
-      fprintf(stderr, "%c", isprint(bs[i + j]) ? bs[i + j] : '.');
+      for (/**/; j < 16; j++)
+        fprintf(stderr, "   ", bs[i + j]);
+      for (j = 0; j < 16 && i + j < nb; j++)
+        fprintf(stderr, "%c", isprint(bs[i + j]) ? bs[i + j] : '.');
     }
     fprintf(stderr, "\n");
   }
