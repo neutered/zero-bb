@@ -72,6 +72,7 @@ struct memdesc {
 #define DESC_WRITE (1 << 0)
 #define DESC_PATH  (1 << 1)
 #define DESC_LIST  (1 << 2)
+#define DESC_CLEAR (1 << 3)
   uint32_t flags;
   uint64_t addr;
   union {
@@ -1433,6 +1434,20 @@ static void fpb_handler(struct pinctl* c, int n_breaks, struct memdesc* breaks)
         dump_reg_fp_comp(label, val);
         fprintf(stderr, "%s:%d: %s: addr:%08x\n", __func__, __LINE__, label, (val & ~0xe0000003));
       }
+    } else if ((d->val == BREAK_DEL) || (d->flags & DESC_CLEAR)) {
+      int all = (d->flags & DESC_CLEAR);
+      for (int j = 0; j < n_code + n_literal; j++) {
+        uint32_t r = REG_FP_COMPx + (j * 4);
+        err = swd_ap_mem_read_u32(c, 0, r, &val);
+        assert(err == 0);
+        if ((val & 1) && (all || ((val & ~0xe0000003) == d->addr))) {
+          val &= ~0x01;
+          err = swd_ap_mem_write_u32(c, 0, r, val);
+          assert(err == 0);
+          update_ctrl |= 1;
+          if (!all) break;
+        }
+      }
     } else if (d->val == BREAK_ADD) {
       #ifndef NDEBUG
       /* double check for existing breakpoints */
@@ -1452,19 +1467,6 @@ static void fpb_handler(struct pinctl* c, int n_breaks, struct memdesc* breaks)
           /* comparator or literal? */
           val = ((j < n_code) ? 0xc0000001 : 0x00000001) | d->addr;
 fprintf(stderr, "%s:%d: i:%u val:%08x\n", __func__, __LINE__, j, val);
-          err = swd_ap_mem_write_u32(c, 0, r, val);
-          assert(err == 0);
-          update_ctrl |= 1;
-          break;
-        }
-      }
-    } else if (d->val == BREAK_DEL) {
-      for (int j = 0; j < n_code + n_literal; j++) {
-        uint32_t r = REG_FP_COMPx + (j * 4);
-        err = swd_ap_mem_read_u32(c, 0, r, &val);
-        assert(err == 0);
-        if ((val & 1) && ((val & ~0xe0000003) == d->addr)) {
-          val &= ~0x01;
           err = swd_ap_mem_write_u32(c, 0, r, val);
           assert(err == 0);
           update_ctrl |= 1;
@@ -1520,6 +1522,8 @@ int main(int argc, char** argv)
 
       if (strcmp(optarg, "list") == 0) {
         sel = -1;
+      } else if (strcmp(optarg, "clear") == 0) {
+        sel = -2;
       } else {
         addr = strtoull(optarg, &end, 0);
         assert(end != optarg);
@@ -1541,6 +1545,9 @@ int main(int argc, char** argv)
       breaks = p;
       memset(breaks + n_breaks, 0, sizeof(*breaks));
       switch (sel) {
+      case -2:
+        breaks[n_breaks].flags |= DESC_CLEAR;
+        break;
       case -1:
         breaks[n_breaks].flags |= DESC_LIST;
         break;
