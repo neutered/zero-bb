@@ -504,7 +504,7 @@ static void hexdump(int ascii, const char* tag, uint64_t cont_addr, const uint8_
       fprintf(stderr, "%02x ", bs[i + j]);
     if (ascii) {
       for (/**/; j < 16; j++)
-        fprintf(stderr, "   ", bs[i + j]);
+        fprintf(stderr, "   ");
       for (j = 0; j < 16 && i + j < nb; j++)
         fprintf(stderr, "%c", isprint(bs[i + j]) ? bs[i + j] : '.');
     }
